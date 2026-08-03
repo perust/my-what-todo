@@ -134,9 +134,11 @@ body {
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 
+/* 켜진 상태는 곧 다크 모드다. 밤하늘처럼 어둡게 두고,
+   달이 올라앉은 흰 손잡이가 대비로 드러나게 한다. */
 .switch.is-on .switch-track {
-  background: var(--focus);
-  border-color: var(--focus);
+  background: #262b3c;
+  border-color: #383e54;
 }
 
 /* 손잡이는 아이콘 아래에 깔린다. 켜져 있는 쪽 아이콘이 그 위에 올라온다. */
@@ -176,8 +178,8 @@ body {
 }
 
 .switch.is-on .switch-sun {
-  color: light-dark(#ffffff, #ffffff);
-  opacity: 0.72;
+  color: #767c92;
+  opacity: 1;
 }
 
 .switch.is-on .switch-moon {
