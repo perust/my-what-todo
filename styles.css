@@ -12,6 +12,8 @@
   --text: light-dark(#18181b, #ececee);
   --text-dim: light-dark(#8b8b93, #86868d);
   --focus: light-dark(#2f6feb, #6c9bff);
+  /* 토마토는 알아보는 게 목적이라 팔레트 밖 색을 하나 쓴다 (F-22) */
+  --tomato: light-dark(#d6392b, #ff6f5e);
 
   --radius: 12px;
   --gap: 10px;
@@ -86,6 +88,7 @@ body {
 
 .header-title {
   margin: 0;
+  white-space: nowrap;
   font-size: 20px;
   font-weight: 650;
   letter-spacing: -0.01em;
@@ -240,16 +243,25 @@ body {
   flex: none;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 26px;
+  gap: 5px;
   height: 26px;
   margin-left: 8px;
-  padding: 0;
+  padding: 0 8px;
   border: 0;
   border-radius: 8px;
   background: none;
   color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
+}
+
+/* 토마토는 늘 빨갛다. 상태는 글자 쪽이 알린다. */
+.pomo-button-icon {
+  flex: none;
+  color: var(--tomato);
 }
 
 .pomo-button:hover {
@@ -261,9 +273,15 @@ body {
   color: var(--text);
 }
 
-/* 돌아가는 중에는 패널을 닫아둬도 아이콘이 알려준다 */
+/* 돌아가는 중에는 패널을 닫아둬도 글자가 알려준다 */
 .pomo-button.is-running {
+  background: color-mix(in srgb, var(--focus) 12%, transparent);
   color: var(--focus);
+}
+
+/* 휴식 중에는 패널과 같은 색으로 맞춘다 */
+.pomo-button.is-rest {
+  --focus: light-dark(#0f8a63, #57d3a4);
 }
 
 .pomo {
@@ -1595,6 +1613,29 @@ body {
 
   .pomo-controls {
     margin-left: 0;
+  }
+
+  /* 헤더 한 줄에 제목·배지·토글·뽀모도로·도움말이 다 들어가야 한다 */
+  .header-row {
+    gap: 6px;
+  }
+
+  .remaining {
+    padding: 3px 7px;
+  }
+
+  .switch,
+  .pomo-button {
+    margin-left: 2px;
+  }
+
+  .pomo-button {
+    padding: 0 5px;
+    gap: 4px;
+  }
+
+  .help-button {
+    margin-left: 2px;
   }
 
   .pomo-custom,

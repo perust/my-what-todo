@@ -450,6 +450,7 @@
     pomoPanel.classList.toggle('is-running', running);
     pomoPanel.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
     pomoButton.classList.toggle('is-running', running);
+    pomoButton.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
     pomoCycleButton.classList.toggle('is-active', inCycle());
 
     // 배경 탭에서도 남은 시간이 보이게 제목에 얹는다
