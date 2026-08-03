@@ -1,0 +1,4 @@
+.DS_Store
+
+# Claude Code 로컬 설정 (기기마다 다름)
+.claude/settings.local.json
