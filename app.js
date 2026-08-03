@@ -111,6 +111,31 @@
     [...list.querySelectorAll('[data-id]')].find((node) => node.dataset.id === id) ?? null;
 
   /**
+   * 바깥을 눌러 대화상자를 닫는다.
+   *
+   * 뒤 배경(`::backdrop`)을 누르면 이벤트 대상이 대화상자 자신이 된다.
+   * 다만 그것만으로는 부족하다 — 대화상자 안쪽 여백을 눌러도 대상은 똑같고,
+   * 키보드로 안쪽 버튼을 누르면 좌표가 (0, 0)으로 들어온다.
+   * 그래서 자식을 눌렀는지 먼저 거르고, 좌표가 실제로 상자 밖인지 다시 본다.
+   *
+   * 셋 다 "고르지 않고 닫으면 취소"라서 바깥 클릭으로 닫아도 잃는 것이 없다.
+   */
+  function closeOnOutsideClick(dialog) {
+    dialog.addEventListener('click', (e) => {
+      if (e.target !== dialog) return;
+
+      const box = dialog.getBoundingClientRect();
+      const inside =
+        e.clientX >= box.left &&
+        e.clientX <= box.right &&
+        e.clientY >= box.top &&
+        e.clientY <= box.bottom;
+
+      if (!inside) dialog.close();
+    });
+  }
+
+  /**
    * Store가 null을 주면 저장에 실패해 변경이 통째로 되돌아간 것이다 (PRD §8).
    * 값 검증은 호출 전에 끝내두었으므로, 여기 도달한 null은 저장 실패뿐이다.
    */
@@ -1230,6 +1255,8 @@
   helpButton.addEventListener('click', () => {
     if (!helpDialog.open) helpDialog.showModal();
   });
+
+  for (const dialog of [helpDialog, clearDialog, importDialog]) closeOnOutsideClick(dialog);
 
   // ── 뽀모도로 ────────────────────────────────────────────
 
