@@ -52,6 +52,16 @@
   const importDialogText = document.getElementById('import-dialog-text');
   const helpButton = document.getElementById('help-button');
   const helpDialog = document.getElementById('help-dialog');
+  const pomoButton = document.getElementById('pomo-button');
+  const pomoPanel = document.getElementById('pomodoro');
+  const pomoTime = document.getElementById('pomo-time');
+  const pomoPresets = document.getElementById('pomo-presets');
+  const pomoCustom = document.getElementById('pomo-custom');
+  const pomoInput = document.getElementById('pomo-input');
+  const pomoToggle = document.getElementById('pomo-toggle');
+  const pomoReset = document.getElementById('pomo-reset');
+
+  const BASE_TITLE = document.title;
 
   /**
    * 분류 축은 한 번에 하나만 켜진다 (F-09).
@@ -242,6 +252,135 @@
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
     themeToggle.setAttribute('aria-checked', String(dark));
     themeToggle.classList.toggle('is-on', dark);
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // 뽀모도로 타이머
+  //
+  // 상태를 저장하지 않는다. 1초마다 저장하면 판 번호가 계속 올라가
+  // 다른 탭이 그때마다 다시 읽게 된다 (F-20). 새로고침하면 처음으로 돌아간다.
+  // ────────────────────────────────────────────────────────────
+
+  const POMO_MIN = 1;
+  const POMO_MAX = 180;
+
+  let pomoLength = 25 * 60; // 설정한 길이(초)
+  let pomoLeft = pomoLength; // 남은 시간(초)
+  let pomoEndsAt = null; // 실행 중일 때만 값이 있다
+  let pomoTick = null;
+
+  const pomoClock = (sec) =>
+    `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+
+  /**
+   * 끝나는 시각을 기준으로 남은 시간을 매번 다시 잰다.
+   * 1초씩 빼면 배경 탭에서 타이머가 느려질 때 그만큼 어긋난다.
+   */
+  function pomoRefresh() {
+    if (pomoEndsAt === null) return;
+
+    pomoLeft = Math.max(0, Math.round((pomoEndsAt - Date.now()) / 1000));
+    if (pomoLeft === 0) pomoFinish();
+    else renderPomo();
+  }
+
+  function pomoStart() {
+    if (pomoEndsAt !== null || pomoLeft === 0) return;
+
+    pomoEndsAt = Date.now() + pomoLeft * 1000;
+    pomoTick = setInterval(pomoRefresh, 250);
+    renderPomo();
+  }
+
+  function pomoPause() {
+    if (pomoEndsAt === null) return;
+
+    pomoLeft = Math.max(0, Math.round((pomoEndsAt - Date.now()) / 1000));
+    pomoEndsAt = null;
+    clearInterval(pomoTick);
+    pomoTick = null;
+    renderPomo();
+  }
+
+  function pomoStop() {
+    pomoEndsAt = null;
+    clearInterval(pomoTick);
+    pomoTick = null;
+  }
+
+  function pomoSet(seconds) {
+    pomoStop();
+    pomoLength = seconds;
+    pomoLeft = seconds;
+    renderPomo();
+  }
+
+  function pomoFinish() {
+    pomoStop();
+    pomoLeft = 0;
+    renderPomo();
+    pomoChime();
+    showNotice(`${Math.round(pomoLength / 60)}분이 끝났습니다.`);
+  }
+
+  /** 소리 파일을 두지 않는다 — 외부 요청 0건을 지키려고 그 자리에서 만든다. */
+  function pomoChime() {
+    try {
+      const Ctx = globalThis.AudioContext ?? globalThis.webkitAudioContext;
+      if (!Ctx) return;
+
+      const ctx = new Ctx();
+      ctx.resume?.().catch(() => {}); // 자동재생 정책으로 멈춰 있으면 깨운다
+      const now = ctx.currentTime;
+
+      for (const [delay, freq] of [
+        [0, 880],
+        [0.18, 1175]
+      ]) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, now + delay);
+        gain.gain.exponentialRampToValueAtTime(0.12, now + delay + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + delay + 0.16);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(now + delay);
+        osc.stop(now + delay + 0.17);
+      }
+      setTimeout(() => ctx.close(), 700);
+    } catch (e) {
+      /* 소리를 못 내도 타이머는 끝난다 */
+    }
+  }
+
+  function renderPomo() {
+    const running = pomoEndsAt !== null;
+
+    pomoTime.textContent = pomoClock(pomoLeft);
+    // 끝난 뒤에는 한 번 더 눌러 바로 다음 판을 돌릴 수 있게 한다.
+    // 00:00 을 그대로 두어 끝났다는 사실은 화면에 남긴다.
+    pomoToggle.textContent = running
+      ? '일시정지'
+      : pomoLeft === 0
+        ? '다시 시작'
+        : pomoLeft < pomoLength
+          ? '계속'
+          : '시작';
+    pomoPanel.classList.toggle('is-running', running);
+    pomoButton.classList.toggle('is-running', running);
+
+    // 배경 탭에서도 남은 시간이 보이게 제목에 얹는다
+    document.title = running ? `${pomoClock(pomoLeft)} · ${BASE_TITLE}` : BASE_TITLE;
+
+    for (const preset of pomoPresets.children) {
+      preset.classList.toggle('is-active', Number(preset.dataset.minutes) * 60 === pomoLength);
+    }
+  }
+
+  function togglePomo(open) {
+    const next = open ?? pomoPanel.hidden;
+    pomoPanel.hidden = !next;
+    pomoButton.setAttribute('aria-expanded', String(next));
   }
 
   // ────────────────────────────────────────────────────────────
@@ -943,6 +1082,57 @@
     if (!helpDialog.open) helpDialog.showModal();
   });
 
+  // ── 뽀모도로 ────────────────────────────────────────────
+
+  pomoButton.addEventListener('click', () => togglePomo());
+
+  pomoPresets.addEventListener('click', (e) => {
+    const preset = e.target.closest('[data-minutes]');
+    if (preset) {
+      pomoSet(Number(preset.dataset.minutes) * 60);
+      pomoInput.value = '';
+    }
+  });
+
+  pomoCustom.addEventListener('submit', (e) => {
+    e.preventDefault();
+
+    const minutes = Number(pomoInput.value);
+    if (!Number.isInteger(minutes) || minutes < POMO_MIN || minutes > POMO_MAX) {
+      showNotice(`${POMO_MIN}분에서 ${POMO_MAX}분 사이로 적어주세요.`);
+      pomoInput.focus();
+      return;
+    }
+    pomoSet(minutes * 60);
+    pomoInput.blur();
+  });
+
+  pomoToggle.addEventListener('click', () => {
+    if (pomoEndsAt !== null) {
+      pomoPause();
+      return;
+    }
+    if (pomoLeft === 0) pomoLeft = pomoLength; // 끝난 타이머는 처음부터 다시
+    pomoStart();
+  });
+
+  pomoReset.addEventListener('click', () => {
+    pomoSet(pomoLength);
+    pomoInput.value = '';
+  });
+
+  pomoPanel.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      togglePomo(false);
+      pomoButton.focus();
+    }
+  });
+
+  // 배경 탭에서는 인터벌이 느려진다. 돌아오면 곧바로 다시 맞춘다.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) pomoRefresh();
+  });
+
   helpDialog.addEventListener('click', (e) => {
     if (e.target.closest('[data-choice="close"]')) helpDialog.close();
   });
@@ -1312,6 +1502,7 @@
   Store.load();
   renderTheme();
   renderBanner();
+  renderPomo();
   render();
   input.focus();
 })();

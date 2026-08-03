@@ -20,9 +20,48 @@
                 role="switch" aria-checked="false" aria-label="다크 모드">
           <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
         </button>
+        <button type="button" id="pomo-button" class="pomo-button"
+                aria-label="뽀모도로 타이머" aria-expanded="false" aria-controls="pomodoro">
+          <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false">
+            <rect x="11.4" y="3.6" width="1.2" height="4.2" rx=".6" fill="currentColor"/>
+            <ellipse cx="8.9" cy="7.5" rx="3.2" ry="1.5" fill="currentColor"
+                     transform="rotate(-24 8.9 7.5)"/>
+            <ellipse cx="15.1" cy="7.5" rx="3.2" ry="1.5" fill="currentColor"
+                     transform="rotate(24 15.1 7.5)"/>
+            <circle cx="12" cy="14.7" r="6.6" fill="currentColor"/>
+          </svg>
+        </button>
         <button type="button" id="help-button" class="help-button"
                 aria-label="도움말" aria-haspopup="dialog">?</button>
       </div>
+
+      <div id="pomodoro" class="pomo" hidden>
+        <div class="pomo-clock">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" d="M12 4.5a7.5 7.5 0 1 1 0 15 7.5 7.5 0 0 1 0-15Z"/>
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M12 8.2V12l2.6 1.6"/>
+          </svg>
+          <span id="pomo-time" class="pomo-time" role="timer" aria-live="off">25:00</span>
+        </div>
+
+        <div id="pomo-presets" class="pomo-presets">
+          <button type="button" class="pomo-preset" data-minutes="25">25분</button>
+          <button type="button" class="pomo-preset" data-minutes="5">5분</button>
+          <button type="button" class="pomo-preset" data-minutes="15">15분</button>
+        </div>
+
+        <form id="pomo-custom" class="pomo-custom" autocomplete="off">
+          <input id="pomo-input" class="pomo-input" type="number" inputmode="numeric"
+                 min="1" max="180" step="1" placeholder="분" aria-label="직접 입력 (분)">
+          <button type="submit" class="pomo-apply">설정</button>
+        </form>
+
+        <div class="pomo-controls">
+          <button type="button" id="pomo-toggle" class="pomo-run">시작</button>
+          <button type="button" id="pomo-reset" class="pomo-reset">초기화</button>
+        </div>
+      </div>
+
       <div class="progress-row">
         <div id="progress" class="progress" role="progressbar"
              aria-label="진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -146,6 +185,18 @@
           <dd>우선순위, 직접 순서, 생성일, 카테고리, 완료 상태 중에서 선택할 수 있습니다.</dd>
           <dt>순서 변경</dt>
           <dd>정렬 기준이 직접 순서일 때만 끌어서 옮길 수 있습니다. 같은 단계의 항목끼리만 이동합니다.</dd>
+        </dl>
+      </section>
+
+      <section class="help-section">
+        <h3 class="help-heading">뽀모도로</h3>
+        <dl class="help-list">
+          <dt>토마토 아이콘</dt>
+          <dd>오른쪽 위 아이콘으로 타이머를 열고 닫습니다. 닫아도 계속 돌아갑니다.</dd>
+          <dt>시간 설정</dt>
+          <dd>25 · 5 · 15분 중에서 고르거나 1분에서 180분 사이로 직접 입력합니다.</dd>
+          <dt>진행 확인</dt>
+          <dd>돌아가는 동안 브라우저 탭 제목에 남은 시간이 표시됩니다. 끝나면 소리로 알립니다.</dd>
         </dl>
       </section>
 

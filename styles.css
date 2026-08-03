@@ -234,6 +234,148 @@ body {
   color: var(--text);
 }
 
+/* ── 뽀모도로 ───────────────────────────────────────── */
+
+.pomo-button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.pomo-button:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+.pomo-button[aria-expanded="true"] {
+  color: var(--text);
+}
+
+/* 돌아가는 중에는 패널을 닫아둬도 아이콘이 알려준다 */
+.pomo-button.is-running {
+  color: var(--focus);
+}
+
+.pomo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.pomo[hidden] {
+  display: none;
+}
+
+.pomo.is-running {
+  border-color: color-mix(in srgb, var(--focus) 45%, var(--border));
+}
+
+.pomo-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+}
+
+.pomo-time {
+  color: var(--text);
+  font-size: 19px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.pomo.is-running .pomo-time {
+  color: var(--focus);
+}
+
+.pomo-presets {
+  display: flex;
+  gap: 4px;
+}
+
+.pomo-preset,
+.pomo-apply,
+.pomo-run,
+.pomo-reset {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pomo-preset:hover,
+.pomo-apply:hover,
+.pomo-reset:hover {
+  border-color: var(--text-dim);
+  color: var(--text);
+}
+
+.pomo-preset.is-active {
+  border-color: var(--focus);
+  color: var(--focus);
+  font-weight: 600;
+}
+
+.pomo-custom {
+  display: flex;
+  gap: 4px;
+}
+
+.pomo-input {
+  width: 66px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.pomo-input::placeholder {
+  color: var(--text-dim);
+}
+
+.pomo-controls {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.pomo-run {
+  border-color: var(--focus);
+  color: var(--focus);
+  font-weight: 600;
+}
+
+.pomo-run:disabled {
+  border-color: var(--border);
+  color: var(--text-dim);
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ── 요약 줄 ────────────────────────────────────────── */
 
 .summary-row {
@@ -1248,6 +1390,15 @@ body {
   .help-list {
     grid-template-columns: 1fr;
     gap: 2px;
+  }
+
+  .pomo-controls {
+    margin-left: 0;
+  }
+
+  .pomo-custom,
+  .pomo-presets {
+    flex: 1 1 auto;
   }
 
   .help-list dd {
