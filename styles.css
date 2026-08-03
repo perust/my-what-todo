@@ -79,19 +79,22 @@ body {
 
 /* ── 헤더 + 진행률 ──────────────────────────────────── */
 
+/* 첫 줄은 이름표다 — 제목과 도움말만 둔다. */
 .header-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
 }
 
-/* 오른쪽 조작부는 한 묶음으로 붙여 둔다.
-   배지처럼 사라지는 것이 섞여 있어도 자리가 흔들리지 않는다. */
-.header-actions {
+/* 둘째 줄은 조작부다. 오른쪽 끝에 붙여 첫 줄의 도움말과 세로로 맞춘다.
+   묶음 자체를 정렬해야 배지가 숨어도 나머지가 왼쪽으로 딸려 오지 않는다. */
+.header-tools {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  margin-left: auto;
+  margin-top: 10px;
 }
 
 .header-title {
@@ -677,7 +680,7 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 12px 0 8px;
+  margin: 14px 0 8px;
 }
 
 .progress {
@@ -1658,8 +1661,8 @@ body {
     gap: 6px;
   }
 
-  .header-actions {
-    gap: 4px;
+  .header-tools {
+    gap: 6px;
   }
 
   .remaining {
