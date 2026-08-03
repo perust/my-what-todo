@@ -267,10 +267,6 @@ body {
 }
 
 .pomo {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
   margin-top: 12px;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -284,6 +280,23 @@ body {
 
 .pomo.is-running {
   border-color: color-mix(in srgb, var(--focus) 45%, var(--border));
+}
+
+/* 휴식은 다른 상태다. 색조를 돌려 한눈에 갈라 보이게 한다. */
+.pomo.is-rest {
+  --focus: light-dark(#0f8a63, #57d3a4);
+}
+
+.pomo-main,
+.pomo-lengths {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pomo-lengths {
+  margin-top: 8px;
 }
 
 .pomo-clock {
@@ -305,9 +318,18 @@ body {
   color: var(--focus);
 }
 
-.pomo-presets {
-  display: flex;
-  gap: 4px;
+.pomo-phase {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--focus) 14%, transparent);
+  color: var(--focus);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pomo-phase[hidden] {
+  display: none;
 }
 
 .pomo-preset,
@@ -337,6 +359,10 @@ body {
   font-weight: 600;
 }
 
+.pomo-cycle {
+  font-weight: 600;
+}
+
 .pomo-custom {
   display: flex;
   gap: 4px;
@@ -359,6 +385,7 @@ body {
 
 .pomo-controls {
   display: flex;
+  align-items: center;
   gap: 4px;
   margin-left: auto;
 }
@@ -369,11 +396,185 @@ body {
   font-weight: 600;
 }
 
-.pomo-run:disabled {
-  border-color: var(--border);
+.pomo-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: none;
   color: var(--text-dim);
-  opacity: 0.5;
-  cursor: default;
+  cursor: pointer;
+}
+
+.pomo-icon:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+.pomo-icon.is-active {
+  color: var(--focus);
+}
+
+/* 펼치기 화살표는 열리면 뒤집는다 */
+#pomo-expand.is-active svg {
+  transform: rotate(180deg);
+}
+
+/* ── 펼친 시계 ──────────────────────────────────────── */
+
+.pomo-dial {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.pomo-dial[hidden] {
+  display: none;
+}
+
+.pomo-dial-face {
+  position: relative;
+  width: 168px;
+  height: 168px;
+}
+
+.pomo-dial-face svg {
+  width: 100%;
+  height: 100%;
+}
+
+.pomo-dial-track {
+  stroke: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+/* 흐른 만큼 채워진다. 남은 시간이 아니라 지나간 시간을 그린다. */
+.pomo-dial-fill {
+  stroke: var(--focus);
+  transition: stroke-dashoffset 0.25s linear;
+}
+
+.pomo-dial-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.pomo-dial-time {
+  font-size: 30px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.pomo-dial-phase {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.pomo-dots {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pomo-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pomo-dot.is-done {
+  border-color: color-mix(in srgb, var(--focus) 45%, transparent);
+  color: var(--focus);
+}
+
+.pomo-dot.is-now {
+  border-color: var(--focus);
+  background: var(--focus);
+  color: light-dark(#fff, #10131a);
+  font-weight: 700;
+}
+
+/* ── 뽀모도로 설정 ──────────────────────────────────── */
+
+.pomo-settings {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.pomo-settings[hidden] {
+  display: none;
+}
+
+.pomo-set-head,
+.pomo-set-row {
+  display: grid;
+  grid-template-columns: 56px 1fr 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.pomo-set-head {
+  margin-bottom: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pomo-set-row + .pomo-set-row {
+  margin-top: 6px;
+}
+
+.pomo-set-index {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.pomo-set-input {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.pomo-set-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.pomo-set-note {
+  color: var(--text-dim);
+  font-size: 12px;
 }
 
 /* ── 요약 줄 ────────────────────────────────────────── */

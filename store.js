@@ -9,7 +9,7 @@
 
   const STORAGE_KEY = 'daily-todo:v1';
   const CORRUPTED_KEY = 'daily-todo:v1:corrupted';
-  const SCHEMA_VERSION = 3;
+  const SCHEMA_VERSION = 4;
   const MAX_TITLE = 100;
   const MAX_CATEGORY_NAME = 12;
 
@@ -25,6 +25,47 @@
     if (typeof value === 'string' && value in LEGACY_PRIORITY) return LEGACY_PRIORITY[value];
     return DEFAULT_PRIORITY;
   };
+
+  /**
+   * 뽀모도로 사이클 — 네 회차를 돌고 처음으로 돌아간다.
+   * 1~3회차 뒤에는 짧은 휴식, 4회차 뒤에는 긴 휴식이 온다. 길이는 회차마다 바꾼다.
+   */
+  const POMO_ROUNDS = 4;
+  const POMO_MIN_MINUTES = 1;
+  const POMO_MAX_MINUTES = 180;
+
+  const DEFAULT_POMODORO = [
+    { focus: 25, rest: 5 },
+    { focus: 25, rest: 5 },
+    { focus: 25, rest: 5 },
+    { focus: 25, rest: 25 }
+  ];
+
+  const defaultPomodoro = () => DEFAULT_POMODORO.map((round) => ({ ...round }));
+
+  const clampMinutes = (value, fallback) => {
+    const n = Math.round(Number(value));
+    return Number.isFinite(n) && n >= POMO_MIN_MINUTES && n <= POMO_MAX_MINUTES ? n : fallback;
+  };
+
+  /**
+   * 회차 수는 고정이다. 모자라거나 망가진 자리는 base의 값을 지킨다.
+   * base를 넘기지 않으면 공장 기본값이 된다 — 저장본을 처음 읽을 때가 그렇다.
+   * 값을 고칠 때는 지금 값을 base로 줘야 한다. 한 칸이 잘못됐다고
+   * 손대지도 않은 다른 칸이 기본값으로 돌아가면 안 된다.
+   */
+  function normalizePomodoro(list, base) {
+    const out = (base ?? DEFAULT_POMODORO).map((round) => ({ ...round }));
+    if (!Array.isArray(list)) return out;
+
+    for (let i = 0; i < POMO_ROUNDS; i++) {
+      const raw = list[i];
+      if (!raw || typeof raw !== 'object') continue;
+      out[i].focus = clampMinutes(raw.focus, out[i].focus);
+      out[i].rest = clampMinutes(raw.rest, out[i].rest);
+    }
+    return out;
+  }
 
   /** 처음 열었을 때 주어지는 세 가지. 이후로는 사용자가 늘리고 줄인다. */
   const DEFAULT_CATEGORIES = [
@@ -42,6 +83,8 @@
   let theme = null;
   /** 정렬 모드. 기본은 우선순위순 (F-06). */
   let sort = 'priority';
+  /** 뽀모도로 회차별 길이(분). 돌아가는 상태는 저장하지 않는다 — 설정만 남긴다. */
+  let pomodoro = defaultPomodoro();
   let corrupted = false;
 
   /** 마지막으로 읽거나 쓴 저장본의 판 번호. 다른 탭이 쓰면 여기서 벌어진다. */
@@ -239,6 +282,7 @@
   function adopt(parsed) {
     theme = parsed?.theme === 'light' || parsed?.theme === 'dark' ? parsed.theme : null;
     sort = SORTS.includes(parsed?.sort) ? parsed.sort : 'priority';
+    pomodoro = normalizePomodoro(parsed?.pomodoro);
 
     // 카테고리를 먼저 세운다. 항목 검증이 이 목록을 기준으로 돌아간다.
     categories = normalizeCategories(parsed?.categories);
@@ -424,7 +468,15 @@
     const next = rev + 1;
     try {
       writeRaw(
-        JSON.stringify({ version: SCHEMA_VERSION, rev: next, theme, sort, categories, todos })
+        JSON.stringify({
+          version: SCHEMA_VERSION,
+          rev: next,
+          theme,
+          sort,
+          pomodoro,
+          categories,
+          todos
+        })
       );
     } catch (e) {
       lastError = 'save'; // QuotaExceededError 등
@@ -458,6 +510,7 @@
     const catSnapshot = categories.map((c) => ({ ...c }));
     const themeSnapshot = theme;
     const sortSnapshot = sort;
+    const pomoSnapshot = pomodoro.map((r) => ({ ...r }));
     const originals = new Map(todos.map((t) => [t.id, t]));
     let result;
 
@@ -466,6 +519,7 @@
       categories = catSnapshot;
       theme = themeSnapshot;
       sort = sortSnapshot;
+      pomodoro = pomoSnapshot;
     };
 
     try {
@@ -576,6 +630,24 @@
       return sort;
     },
 
+    POMO_ROUNDS,
+    POMO_MIN_MINUTES,
+    POMO_MAX_MINUTES,
+
+    /** 회차별 길이(분). 복사본이라 UI가 목록을 직접 건드릴 수 없다. */
+    getPomodoro() {
+      return pomodoro.map((round) => ({ ...round }));
+    },
+
+    /** list를 넘기지 않으면 공장 기본값으로 되돌린다. */
+    setPomodoro(list) {
+      const next = list == null ? defaultPomodoro() : normalizePomodoro(list, pomodoro);
+      return commit(() => {
+        pomodoro = next;
+        return pomodoro.map((round) => ({ ...round }));
+      });
+    },
+
     setSort(next) {
       if (!SORTS.includes(next)) return null;
       return commit(() => {
@@ -617,6 +689,7 @@
         version: SCHEMA_VERSION,
         theme,
         sort,
+        pomodoro: pomodoro.map((round) => ({ ...round })),
         categories: categories.map((c) => ({ ...c })),
         todos: todos.map(clone)
       };
@@ -680,6 +753,7 @@
       categories = defaultCategories();
       theme = null;
       sort = 'priority';
+      pomodoro = defaultPomodoro();
 
       const raw = readRaw();
       if (!raw) return todos;

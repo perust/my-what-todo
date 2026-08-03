@@ -55,11 +55,23 @@
   const pomoButton = document.getElementById('pomo-button');
   const pomoPanel = document.getElementById('pomodoro');
   const pomoTime = document.getElementById('pomo-time');
-  const pomoPresets = document.getElementById('pomo-presets');
+  const pomoLengths = document.querySelector('.pomo-lengths');
   const pomoCustom = document.getElementById('pomo-custom');
   const pomoInput = document.getElementById('pomo-input');
   const pomoToggle = document.getElementById('pomo-toggle');
   const pomoReset = document.getElementById('pomo-reset');
+  const pomoPhase = document.getElementById('pomo-phase');
+  const pomoCycleButton = document.getElementById('pomo-cycle');
+  const pomoExpand = document.getElementById('pomo-expand');
+  const pomoDial = document.getElementById('pomo-dial');
+  const pomoDialFill = document.getElementById('pomo-dial-fill');
+  const pomoDialTime = document.getElementById('pomo-dial-time');
+  const pomoDialPhase = document.getElementById('pomo-dial-phase');
+  const pomoDots = document.getElementById('pomo-dots');
+  const pomoSettingsButton = document.getElementById('pomo-settings-button');
+  const pomoSettings = document.getElementById('pomo-settings');
+  const pomoSetRows = document.getElementById('pomo-set-rows');
+  const pomoSetDefault = document.getElementById('pomo-set-default');
 
   const BASE_TITLE = document.title;
 
@@ -264,13 +276,37 @@
   const POMO_MIN = 1;
   const POMO_MAX = 180;
 
+  /** 원 둘레. 반지름 44인 원이라 2πr. 채움 길이를 이 값으로 잰다. */
+  const DIAL_LENGTH = 2 * Math.PI * 44;
+
   let pomoLength = 25 * 60; // 설정한 길이(초)
   let pomoLeft = pomoLength; // 남은 시간(초)
   let pomoEndsAt = null; // 실행 중일 때만 값이 있다
   let pomoTick = null;
 
+  /** 사이클 모드일 때만 값이 찬다. 회차는 0부터 세고 화면에는 1부터 보여준다. */
+  let cycleRound = null;
+  let cyclePhase = 'focus'; // "focus" | "rest"
+
+  const inCycle = () => cycleRound !== null;
+
   const pomoClock = (sec) =>
     `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+
+  /** 마지막 회차의 휴식만 길게 잡는 것이 뽀모도로 기법이다. */
+  const isLongRest = (round) => round === Store.POMO_ROUNDS - 1;
+
+  function phaseLabel() {
+    if (!inCycle()) return '';
+    const round = cycleRound + 1;
+    if (cyclePhase === 'focus') return `집중 ${round}/${Store.POMO_ROUNDS}`;
+    return isLongRest(cycleRound) ? '긴 휴식' : `휴식 ${round}/${Store.POMO_ROUNDS}`;
+  }
+
+  const phaseMinutes = (round, phase) => {
+    const set = Store.getPomodoro()[round];
+    return phase === 'focus' ? set.focus : set.rest;
+  };
 
   /**
    * 끝나는 시각을 기준으로 남은 시간을 매번 다시 잰다.
@@ -296,9 +332,7 @@
     if (pomoEndsAt === null) return;
 
     pomoLeft = Math.max(0, Math.round((pomoEndsAt - Date.now()) / 1000));
-    pomoEndsAt = null;
-    clearInterval(pomoTick);
-    pomoTick = null;
+    pomoStop();
     renderPomo();
   }
 
@@ -308,23 +342,52 @@
     pomoTick = null;
   }
 
+  /** 단일 타이머로 돌아간다. 프리셋이나 직접 입력을 고르면 사이클에서 빠진다. */
   function pomoSet(seconds) {
     pomoStop();
+    cycleRound = null;
     pomoLength = seconds;
     pomoLeft = seconds;
     renderPomo();
   }
 
+  /** 사이클의 한 구간을 세운다. run이 true면 바로 이어서 돌린다. */
+  function cycleEnter(round, phase, run) {
+    pomoStop();
+    cycleRound = round;
+    cyclePhase = phase;
+    pomoLength = phaseMinutes(round, phase) * 60;
+    pomoLeft = pomoLength;
+
+    if (run) pomoStart();
+    else renderPomo();
+  }
+
   function pomoFinish() {
     pomoStop();
     pomoLeft = 0;
-    renderPomo();
-    pomoChime();
-    showNotice(`${Math.round(pomoLength / 60)}분이 끝났습니다.`);
+
+    if (!inCycle()) {
+      renderPomo();
+      pomoChime(false);
+      showNotice(`${Math.round(pomoLength / 60)}분이 끝났습니다.`);
+      return;
+    }
+
+    // 집중 뒤에는 휴식, 휴식 뒤에는 다음 회차. 마지막 회차를 마치면 처음으로 돌아온다.
+    const wasFocus = cyclePhase === 'focus';
+    const nextRound = wasFocus ? cycleRound : (cycleRound + 1) % Store.POMO_ROUNDS;
+    const nextPhase = wasFocus ? 'rest' : 'focus';
+
+    const ended = phaseLabel();
+    cycleEnter(nextRound, nextPhase, true);
+
+    pomoChime(nextPhase === 'focus');
+    showNotice(`${ended} 끝 — 이어서 ${phaseLabel()}`);
   }
 
   /** 소리 파일을 두지 않는다 — 외부 요청 0건을 지키려고 그 자리에서 만든다. */
-  function pomoChime() {
+  function pomoChime(rising) {
     try {
       const Ctx = globalThis.AudioContext ?? globalThis.webkitAudioContext;
       if (!Ctx) return;
@@ -333,10 +396,11 @@
       ctx.resume?.().catch(() => {}); // 자동재생 정책으로 멈춰 있으면 깨운다
       const now = ctx.currentTime;
 
-      for (const [delay, freq] of [
-        [0, 880],
-        [0.18, 1175]
-      ]) {
+      // 다음이 집중이면 올라가고, 휴식이면 내려간다. 보지 않아도 구분된다.
+      const tones = rising ? [880, 1175] : [1175, 880];
+
+      tones.forEach((freq, i) => {
+        const delay = i * 0.18;
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.frequency.value = freq;
@@ -346,19 +410,35 @@
         osc.connect(gain).connect(ctx.destination);
         osc.start(now + delay);
         osc.stop(now + delay + 0.17);
-      }
+      });
       setTimeout(() => ctx.close(), 700);
     } catch (e) {
       /* 소리를 못 내도 타이머는 끝난다 */
     }
   }
 
+  function renderDots() {
+    pomoDots.textContent = '';
+
+    for (let i = 0; i < Store.POMO_ROUNDS; i++) {
+      const dot = el('li', 'pomo-dot');
+      if (inCycle() && i < cycleRound) dot.classList.add('is-done');
+      if (inCycle() && i === cycleRound) dot.classList.add('is-now');
+      dot.textContent = String(i + 1);
+      pomoDots.appendChild(dot);
+    }
+  }
+
   function renderPomo() {
     const running = pomoEndsAt !== null;
+    const clock = pomoClock(pomoLeft);
+    const label = phaseLabel();
 
-    pomoTime.textContent = pomoClock(pomoLeft);
+    pomoTime.textContent = clock;
+    pomoPhase.textContent = label;
+    pomoPhase.hidden = label === '';
+
     // 끝난 뒤에는 한 번 더 눌러 바로 다음 판을 돌릴 수 있게 한다.
-    // 00:00 을 그대로 두어 끝났다는 사실은 화면에 남긴다.
     pomoToggle.textContent = running
       ? '일시정지'
       : pomoLeft === 0
@@ -366,21 +446,89 @@
         : pomoLeft < pomoLength
           ? '계속'
           : '시작';
+
     pomoPanel.classList.toggle('is-running', running);
+    pomoPanel.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
     pomoButton.classList.toggle('is-running', running);
+    pomoCycleButton.classList.toggle('is-active', inCycle());
 
     // 배경 탭에서도 남은 시간이 보이게 제목에 얹는다
-    document.title = running ? `${pomoClock(pomoLeft)} · ${BASE_TITLE}` : BASE_TITLE;
+    document.title = running ? `${clock} · ${BASE_TITLE}` : BASE_TITLE;
 
-    for (const preset of pomoPresets.children) {
-      preset.classList.toggle('is-active', Number(preset.dataset.minutes) * 60 === pomoLength);
+    for (const preset of document.querySelectorAll('.pomo-preset[data-minutes]')) {
+      preset.classList.toggle(
+        'is-active',
+        !inCycle() && Number(preset.dataset.minutes) * 60 === pomoLength
+      );
     }
+
+    // 흐른 만큼 원이 채워진다
+    const done = pomoLength > 0 ? 1 - pomoLeft / pomoLength : 0;
+    pomoDialFill.style.strokeDasharray = String(DIAL_LENGTH);
+    pomoDialFill.style.strokeDashoffset = String(DIAL_LENGTH * (1 - done));
+    pomoDialTime.textContent = clock;
+    pomoDialPhase.textContent = label || `${Math.round(pomoLength / 60)}분`;
+    renderDots();
+  }
+
+  /**
+   * 저장된 값을 입력 칸에 도로 맞춘다. **다시 그리지 않는다** —
+   * 한 칸을 고칠 때마다 전부 새로 그리면, 방금 옮겨간 칸이 교체되며
+   * 포커스와 입력하던 내용이 사라진다.
+   */
+  function syncPomoSettings(force) {
+    const cycle = Store.getPomodoro();
+
+    for (const field of pomoSetRows.querySelectorAll('.pomo-set-input')) {
+      if (!force && field === document.activeElement) continue;
+      field.value = String(cycle[Number(field.dataset.round)][field.dataset.key]);
+    }
+  }
+
+  function renderPomoSettings() {
+    if (pomoSettings.hidden) return;
+
+    const cycle = Store.getPomodoro();
+    pomoSetRows.textContent = '';
+
+    cycle.forEach((round, i) => {
+      const row = el('div', 'pomo-set-row');
+
+      const label = el('span', 'pomo-set-index');
+      label.textContent = `${i + 1}회차`;
+      row.appendChild(label);
+
+      for (const key of ['focus', 'rest']) {
+        const field = el('input', 'pomo-set-input');
+        field.type = 'number';
+        field.inputMode = 'numeric';
+        field.min = String(Store.POMO_MIN_MINUTES);
+        field.max = String(Store.POMO_MAX_MINUTES);
+        field.step = '1';
+        field.value = String(round[key]);
+        field.dataset.round = String(i);
+        field.dataset.key = key;
+        field.setAttribute(
+          'aria-label',
+          `${i + 1}회차 ${key === 'focus' ? '집중' : '휴식'} 시간(분)`
+        );
+        row.appendChild(field);
+      }
+      pomoSetRows.appendChild(row);
+    });
   }
 
   function togglePomo(open) {
     const next = open ?? pomoPanel.hidden;
     pomoPanel.hidden = !next;
     pomoButton.setAttribute('aria-expanded', String(next));
+  }
+
+  function togglePomoView(node, button, open) {
+    const next = open ?? node.hidden;
+    node.hidden = !next;
+    button.setAttribute('aria-expanded', String(next));
+    button.classList.toggle('is-active', next);
   }
 
   // ────────────────────────────────────────────────────────────
@@ -1086,12 +1234,17 @@
 
   pomoButton.addEventListener('click', () => togglePomo());
 
-  pomoPresets.addEventListener('click', (e) => {
-    const preset = e.target.closest('[data-minutes]');
-    if (preset) {
-      pomoSet(Number(preset.dataset.minutes) * 60);
-      pomoInput.value = '';
-    }
+  // 사이클 — 한 번 누르면 1회차 집중부터 끝까지 이어서 돈다
+  pomoCycleButton.addEventListener('click', () => {
+    cycleEnter(0, 'focus', true);
+  });
+
+  pomoLengths.addEventListener('click', (e) => {
+    const preset = e.target.closest('.pomo-preset[data-minutes]');
+    if (!preset) return;
+
+    pomoSet(Number(preset.dataset.minutes) * 60);
+    pomoInput.value = '';
   });
 
   pomoCustom.addEventListener('submit', (e) => {
@@ -1117,12 +1270,57 @@
   });
 
   pomoReset.addEventListener('click', () => {
-    pomoSet(pomoLength);
+    // 사이클 중이면 1회차 집중으로 되돌린다. 단일 타이머면 그 길이로 되돌린다.
+    if (inCycle()) cycleEnter(0, 'focus', false);
+    else pomoSet(pomoLength);
     pomoInput.value = '';
   });
 
+  pomoExpand.addEventListener('click', () => {
+    togglePomoView(pomoDial, pomoExpand, undefined);
+    pomoExpand.setAttribute(
+      'aria-label',
+      pomoDial.hidden ? '시계 펼치기' : '시계 접기'
+    );
+    renderPomo();
+  });
+
+  pomoSettingsButton.addEventListener('click', () => {
+    togglePomoView(pomoSettings, pomoSettingsButton, undefined);
+    renderPomoSettings();
+  });
+
+  // 입력을 마칠 때마다 저장한다. 값이 범위를 벗어나면 store가 예전 값을 지킨다.
+  pomoSetRows.addEventListener('change', (e) => {
+    const field = e.target.closest('.pomo-set-input');
+    if (!field) return;
+
+    const cycle = Store.getPomodoro();
+    cycle[Number(field.dataset.round)][field.dataset.key] = Number(field.value);
+
+    if (!saved(Store.setPomodoro(cycle))) return;
+
+    syncPomoSettings(false);
+    // 지금 돌고 있지 않은 구간이면 새 길이를 곧바로 반영한다
+    if (inCycle() && pomoEndsAt === null) cycleEnter(cycleRound, cyclePhase, false);
+    else renderPomo();
+  });
+
+  pomoSetDefault.addEventListener('click', () => {
+    if (!saved(Store.setPomodoro(null))) return;
+
+    syncPomoSettings(true);
+    if (inCycle() && pomoEndsAt === null) cycleEnter(cycleRound, cyclePhase, false);
+    else renderPomo();
+  });
+
   pomoPanel.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
+    if (e.key !== 'Escape') return;
+
+    // 안쪽 화면이 열려 있으면 그것부터 닫는다
+    if (!pomoSettings.hidden) togglePomoView(pomoSettings, pomoSettingsButton, false);
+    else if (!pomoDial.hidden) togglePomoView(pomoDial, pomoExpand, false);
+    else {
       togglePomo(false);
       pomoButton.focus();
     }

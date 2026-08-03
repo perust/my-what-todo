@@ -36,29 +36,74 @@
       </div>
 
       <div id="pomodoro" class="pomo" hidden>
-        <div class="pomo-clock">
-          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
-            <path fill="none" stroke="currentColor" stroke-width="1.6" d="M12 4.5a7.5 7.5 0 1 1 0 15 7.5 7.5 0 0 1 0-15Z"/>
-            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M12 8.2V12l2.6 1.6"/>
-          </svg>
-          <span id="pomo-time" class="pomo-time" role="timer" aria-live="off">25:00</span>
+        <div class="pomo-main">
+          <div class="pomo-clock">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
+              <path fill="none" stroke="currentColor" stroke-width="1.6" d="M12 4.5a7.5 7.5 0 1 1 0 15 7.5 7.5 0 0 1 0-15Z"/>
+              <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M12 8.2V12l2.6 1.6"/>
+            </svg>
+            <span id="pomo-time" class="pomo-time" role="timer" aria-live="off">25:00</span>
+          </div>
+          <span id="pomo-phase" class="pomo-phase"></span>
+
+          <div class="pomo-controls">
+            <button type="button" id="pomo-toggle" class="pomo-run">시작</button>
+            <button type="button" id="pomo-reset" class="pomo-reset">초기화</button>
+            <button type="button" id="pomo-expand" class="pomo-icon"
+                    aria-label="시계 펼치기" aria-expanded="false" aria-controls="pomo-dial">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
+                <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                      stroke-linejoin="round" d="m6 9 6 6 6-6"/>
+              </svg>
+            </button>
+            <button type="button" id="pomo-settings-button" class="pomo-icon"
+                    aria-label="뽀모도로 설정" aria-expanded="false" aria-controls="pomo-settings">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
+                <circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                      d="M12 3.4v2.2M12 18.4v2.2M20.6 12h-2.2M5.6 12H3.4M18.1 5.9l-1.6 1.6M7.5 16.5l-1.6 1.6M18.1 18.1l-1.6-1.6M7.5 7.5 5.9 5.9"/>
+              </svg>
+            </button>
+          </div>
         </div>
 
-        <div id="pomo-presets" class="pomo-presets">
+        <div class="pomo-lengths">
+          <button type="button" id="pomo-cycle" class="pomo-preset pomo-cycle">사이클</button>
           <button type="button" class="pomo-preset" data-minutes="25">25분</button>
           <button type="button" class="pomo-preset" data-minutes="5">5분</button>
           <button type="button" class="pomo-preset" data-minutes="15">15분</button>
+          <form id="pomo-custom" class="pomo-custom" autocomplete="off">
+            <input id="pomo-input" class="pomo-input" type="number" inputmode="numeric"
+                   min="1" max="180" step="1" placeholder="분" aria-label="직접 입력 (분)">
+            <button type="submit" class="pomo-apply">설정</button>
+          </form>
         </div>
 
-        <form id="pomo-custom" class="pomo-custom" autocomplete="off">
-          <input id="pomo-input" class="pomo-input" type="number" inputmode="numeric"
-                 min="1" max="180" step="1" placeholder="분" aria-label="직접 입력 (분)">
-          <button type="submit" class="pomo-apply">설정</button>
-        </form>
+        <div id="pomo-dial" class="pomo-dial" hidden>
+          <div class="pomo-dial-face">
+            <svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+              <circle class="pomo-dial-track" cx="50" cy="50" r="44" fill="none" stroke-width="8"/>
+              <circle id="pomo-dial-fill" class="pomo-dial-fill" cx="50" cy="50" r="44"
+                      fill="none" stroke-width="8" stroke-linecap="round"
+                      transform="rotate(-90 50 50)"/>
+            </svg>
+            <div class="pomo-dial-label">
+              <span id="pomo-dial-time" class="pomo-dial-time">25:00</span>
+              <span id="pomo-dial-phase" class="pomo-dial-phase"></span>
+            </div>
+          </div>
+          <ol id="pomo-dots" class="pomo-dots" aria-label="사이클 진행"></ol>
+        </div>
 
-        <div class="pomo-controls">
-          <button type="button" id="pomo-toggle" class="pomo-run">시작</button>
-          <button type="button" id="pomo-reset" class="pomo-reset">초기화</button>
+        <div id="pomo-settings" class="pomo-settings" role="group" aria-label="뽀모도로 설정" hidden>
+          <div class="pomo-set-head">
+            <span>회차</span><span>집중</span><span>휴식</span>
+          </div>
+          <div id="pomo-set-rows" class="pomo-set-rows"></div>
+          <div class="pomo-set-foot">
+            <span class="pomo-set-note">분 단위로 1에서 180까지</span>
+            <button type="button" id="pomo-set-default" class="pomo-reset">기본값</button>
+          </div>
         </div>
       </div>
 
@@ -193,8 +238,14 @@
         <dl class="help-list">
           <dt>토마토 아이콘</dt>
           <dd>오른쪽 위 아이콘으로 타이머를 열고 닫습니다. 닫아도 계속 돌아갑니다.</dd>
-          <dt>시간 설정</dt>
+          <dt>사이클</dt>
+          <dd>집중과 휴식을 네 번 반복합니다. 1~3회차는 짧게 쉬고 4회차 뒤에는 길게 쉽니다. 한 구간이 끝나면 다음 구간이 이어서 시작됩니다.</dd>
+          <dt>단일 타이머</dt>
           <dd>25 · 5 · 15분 중에서 고르거나 1분에서 180분 사이로 직접 입력합니다.</dd>
+          <dt>설정 (톱니바퀴)</dt>
+          <dd>회차마다 집중 시간과 휴식 시간을 바꿀 수 있습니다.</dd>
+          <dt>펼치기 (화살표)</dt>
+          <dd>원형 시계를 엽니다. 시간이 흐른 만큼 색이 채워집니다.</dd>
           <dt>진행 확인</dt>
           <dd>돌아가는 동안 브라우저 탭 제목에 남은 시간이 표시됩니다. 끝나면 소리로 알립니다.</dd>
         </dl>

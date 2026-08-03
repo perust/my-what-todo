@@ -30,10 +30,12 @@
 
 ## 데이터
 
-- 저장 형식은 `{ version: 3, rev, theme, sort, categories, todos }`. `todos`는 **평평한 배열 + `parentId`**다.
+- 저장 형식은 `{ version: 4, rev, theme, sort, pomodoro, categories, todos }`. `todos`는 **평평한 배열 + `parentId`**다.
 - 우선순위는 **숫자 0~3이고 0이 가장 높다.** 값 자체가 순위라 가중치 표를 두지 않는다.
   v2까지의 `"high"`/`"normal"`/`"low"`는 로드 시 `0`/`1`/`2`로 옮긴다.
-- 테마 선택도 이 안에 넣는다. 별도 `localStorage` 키를 만들지 않는다.
+- 테마 선택과 뽀모도로 회차 설정도 이 안에 넣는다. 별도 `localStorage` 키를 만들지 않는다.
+- 다만 **1초마다 바뀌는 값은 저장하지 않는다.** 판 번호가 계속 올라가 다른 탭이
+  그때마다 다시 읽는다. 뽀모도로는 설정만 남기고 돌아가는 상태는 메모리에 둔다.
 - **카테고리는 고정값이 아니다.** 기본 3종(`work`/`personal`/`study`)으로 시작하지만
   사용자가 만들고 지운다. 코드에 카테고리 id나 이름을 하드코딩하지 말고
   `Store.getCategories()`를 쓴다.
