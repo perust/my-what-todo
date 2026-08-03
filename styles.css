@@ -79,7 +79,7 @@ body {
 
 /* ── 헤더 + 진행률 ──────────────────────────────────── */
 
-/* 첫 줄은 이름표다 — 제목과 도움말만 둔다. */
+/* 첫 줄은 앱 자체에 대한 것 — 제목, 테마, 도움말. */
 .header-row {
   display: flex;
   align-items: center;
@@ -87,7 +87,13 @@ body {
   gap: 12px;
 }
 
-/* 둘째 줄은 조작부다. 오른쪽 끝에 붙여 첫 줄의 도움말과 세로로 맞춘다.
+.header-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 둘째 줄은 일에 관한 것 — 남은 할 일과 뽀모도로. 오른쪽 끝에 붙여 위와 맞춘다.
    묶음 자체를 정렬해야 배지가 숨어도 나머지가 왼쪽으로 딸려 오지 않는다. */
 .header-tools {
   display: flex;
@@ -1661,6 +1667,7 @@ body {
     gap: 6px;
   }
 
+  .header-meta,
   .header-tools {
     gap: 6px;
   }
