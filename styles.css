@@ -124,15 +124,14 @@ body {
 }
 
 .switch-track {
-  display: inline-flex;
-  align-items: center;
-  width: 40px;
-  height: 22px;
-  padding: 3px;
+  position: relative;
+  display: inline-block;
+  width: 48px;
+  height: 26px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface);
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .switch.is-on .switch-track {
@@ -140,17 +139,50 @@ body {
   border-color: var(--focus);
 }
 
+/* 손잡이는 아이콘 아래에 깔린다. 켜져 있는 쪽 아이콘이 그 위에 올라온다. */
 .switch-knob {
-  width: 14px;
-  height: 14px;
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
-  background: var(--text-dim);
-  transition: transform 0.15s ease, background 0.15s ease;
+  background: light-dark(#fff, #ececee);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+  transition: transform 0.18s ease;
 }
 
 .switch.is-on .switch-knob {
-  background: #fff;
-  transform: translateX(18px);
+  transform: translateX(22px);
+}
+
+/* 해와 달은 늘 보인다. 지금 켜진 쪽이 손잡이 위에서 진하게 나온다. */
+.switch-icon {
+  position: absolute;
+  top: 6px;
+  width: 12px;
+  height: 12px;
+  transition: color 0.15s ease;
+}
+
+.switch-sun {
+  left: 6px;
+  color: light-dark(#c8801a, #8e6a2e);
+}
+
+.switch-moon {
+  right: 6px;
+  color: light-dark(#b9bcc4, #2c3550);
+}
+
+.switch.is-on .switch-sun {
+  color: light-dark(#ffffff, #ffffff);
+  opacity: 0.72;
+}
+
+.switch.is-on .switch-moon {
+  color: light-dark(#3a4668, #2c3550);
+  opacity: 1;
 }
 
 .help-button {
