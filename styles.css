@@ -81,9 +81,17 @@ body {
 
 .header-row {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  align-items: center;
   gap: 12px;
+}
+
+/* 오른쪽 조작부는 한 묶음으로 붙여 둔다.
+   배지처럼 사라지는 것이 섞여 있어도 자리가 흔들리지 않는다. */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .header-title {
@@ -96,7 +104,6 @@ body {
 
 .remaining {
   flex: none;
-  margin-left: auto;
   padding: 3px 10px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--focus) 14%, transparent);
@@ -115,7 +122,6 @@ body {
 
 .switch {
   flex: none;
-  margin-left: 10px;
   padding: 0;
   border: 0;
   background: none;
@@ -191,7 +197,6 @@ body {
   flex: none;
   width: 24px;
   height: 24px;
-  margin-left: 8px;
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 50%;
@@ -279,7 +284,6 @@ body {
   align-items: center;
   gap: 5px;
   height: 26px;
-  margin-left: 8px;
   padding: 0 8px;
   border: 0;
   border-radius: 8px;
@@ -1649,27 +1653,22 @@ body {
     margin-left: 0;
   }
 
-  /* 헤더 한 줄에 제목·배지·토글·뽀모도로·도움말이 다 들어가야 한다 */
+  /* 헤더 한 줄에 제목·배지·뽀모도로·토글·도움말이 다 들어가야 한다 */
   .header-row {
     gap: 6px;
+  }
+
+  .header-actions {
+    gap: 4px;
   }
 
   .remaining {
     padding: 3px 7px;
   }
 
-  .switch,
-  .pomo-button {
-    margin-left: 2px;
-  }
-
   .pomo-button {
     padding: 0 5px;
     gap: 4px;
-  }
-
-  .help-button {
-    margin-left: 2px;
   }
 
   .pomo-custom,
