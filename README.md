@@ -3,8 +3,9 @@
 머릿속에 뭉쳐 있는 일을 실행 단위로 쪼개서 관리하는 1인용 할 일 웹 앱입니다.
 백엔드 없이 브라우저의 LocalStorage를 정본으로 저장합니다. 지원 브라우저에서는 사용자가
 고른 JSON 파일에도 현재 페이지 세션 동안 변경을 자동 저장할 수 있습니다. Obsidian vault의
-Markdown 파일을 고르면 앱 변경을 단방향 읽기 전용 보기로 자동 생성하며, 이 연결도 현재
-페이지 세션에만 유지됩니다. 빌드 없이 정적 파일 그대로 올립니다.
+Markdown 파일을 고르면 앱 변경을 단방향 보기로 자동 생성하며, 이 연결도 현재 페이지
+세션에만 유지됩니다. 별도의 순수 parser는 그 정본 문서에서 기존 항목만 제한적으로 편집한
+결과를 검증할 수 있습니다. 빌드 없이 정적 파일 그대로 올립니다.
 
 ## 주요 기능
 
@@ -29,9 +30,11 @@ Markdown 파일을 고르면 앱 변경을 단방향 읽기 전용 보기로 자
   이후 변경을 순서대로 덮어씁니다. 연결 뒤 외부 변경은 exact bytes로 감지해 자동 저장을
   멈추며, 앱 내용으로 강제 덮어쓰기 또는 외부 파일 유지(연결 해제)를 선택합니다. 연결과
   baseline은 현재 페이지 세션에만 유지됩니다. 파일 API에 원자적 compare-and-swap이 없어
-  Markdown read→write 사이 TOCTOU는 남는 best-effort 보호입니다. 앱이 정본인 단방향 읽기
-  전용 보기이므로 Markdown 편집을 앱으로 가져오지는 않습니다. **6단계 parser/import**는
-  기존 후속 범위로 남아 있으며 이번 보호가 양방향 동기화를 추가하지 않습니다
+  Markdown read→write 사이 TOCTOU는 남는 best-effort 보호입니다. **6단계 parser/import 중 6A parser**는
+  `MarkdownExport.render(currentSnapshot)`가 만든 정본 문서의 기존 ID exact-once 편집만
+  fail-closed로 검증합니다. 체크박스·P0~P3·제목·태그·형제 순서·기존 카테고리 이동·2단계
+  재배치를 지원하고, 항목/카테고리 추가·삭제와 설정/임의 Markdown 변경은 거부합니다.
+  아직 app/Store/Sync가 parser를 호출하지 않으므로 실제 가져오기/양방향 연결은 **6B 후속 범위**입니다
 - **뽀모도로 타이머** — 집중·휴식 4회차 사이클과 단일 타이머. 회차별 시간을 직접 정하고,
   펼치면 시간이 흐른 만큼 채워지는 원형 시계로 봅니다. 새로고침해도 돌아가던 자리에서 이어집니다
 - **다크 모드** — OS 설정을 따르다가, 고르면 그 선택을 지킵니다
@@ -63,6 +66,7 @@ python3 -m http.server 8000
 node tests/regressions.js
 node tests/file-sync.js
 node tests/markdown-export.js
+node tests/markdown-import.js
 node tests/markdown-sync.js
 ```
 
@@ -77,12 +81,14 @@ node tests/markdown-sync.js
 ├── store.js      # 데이터 계층: 저장·검증·전파·정렬·집계. DOM을 모른다
 ├── file-sync.js  # 페이지 세션 한정 JSON 파일 연결과 직렬 쓰기 큐
 ├── markdown-export.js # Store 스냅샷 → 결정론적 Obsidian Markdown
+├── markdown-import.js # canonical Markdown 기존 항목 제한 편집 strict parser
 ├── markdown-sync.js   # 페이지 세션 한정 Markdown 연결과 직렬 쓰기 큐
 ├── app.js        # UI 계층: 렌더링과 이벤트. Store와 Parse만 호출한다
 ├── tests/
 │   ├── regressions.js  # Node 내장 모듈만 쓰는 회귀 테스트
 │   ├── file-sync.js    # 파일 연결·직렬 저장 focused 테스트
 │   ├── markdown-export.js # Markdown exact bytes·검증 테스트
+│   ├── markdown-import.js # canonical parser·hostile matrix·Store 경계 테스트
 │   └── markdown-sync.js   # Markdown 연결·실패 복구 테스트
 ├── CLAUDE.md     # 이 저장소에서 지켜야 할 제약
 └── docs/
