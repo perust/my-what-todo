@@ -2,8 +2,9 @@
 
 머릿속에 뭉쳐 있는 일을 실행 단위로 쪼개서 관리하는 1인용 할 일 웹 앱입니다.
 백엔드 없이 브라우저의 LocalStorage를 정본으로 저장합니다. 지원 브라우저에서는 사용자가
-고른 JSON 파일에도 현재 페이지 세션 동안 변경을 자동 저장할 수 있습니다. 빌드 없이 정적
-파일 그대로 올립니다.
+고른 JSON 파일에도 현재 페이지 세션 동안 변경을 자동 저장할 수 있습니다. Obsidian vault의
+Markdown 파일을 고르면 앱 변경을 단방향 읽기 전용 보기로 자동 생성하며, 이 연결도 현재
+페이지 세션에만 유지됩니다. 빌드 없이 정적 파일 그대로 올립니다.
 
 ## 주요 기능
 
@@ -21,6 +22,9 @@
 - **JSON 파일 연결** — `파일 연결`로 고른 파일에 현재 데이터를 즉시 쓰고, 이후 성공한
   변경을 순서대로 자동 저장합니다. footer에서 연결 파일과 마지막 성공 저장 시각을 확인할
   수 있으며, 연결은 현재 페이지 세션에만 유지됩니다
+- **Markdown 연결** — Obsidian vault에서 고른 `.md` 파일에 현재 목록을 즉시 생성하고 앱의
+  이후 변경을 순서대로 덮어씁니다. 앱이 정본인 단방향 읽기 전용 보기이며, 연결은 현재 페이지
+  세션에만 유지됩니다
 - **뽀모도로 타이머** — 집중·휴식 4회차 사이클과 단일 타이머. 회차별 시간을 직접 정하고,
   펼치면 시간이 흐른 만큼 채워지는 원형 시계로 봅니다. 새로고침해도 돌아가던 자리에서 이어집니다
 - **다크 모드** — OS 설정을 따르다가, 고르면 그 선택을 지킵니다
@@ -51,6 +55,8 @@ python3 -m http.server 8000
 ```bash
 node tests/regressions.js
 node tests/file-sync.js
+node tests/markdown-export.js
+node tests/markdown-sync.js
 ```
 
 ## 프로젝트 구조
@@ -63,10 +69,14 @@ node tests/file-sync.js
 ├── parse.js      # 입력 문자열 → { title, priority, tags }. 순수 함수만
 ├── store.js      # 데이터 계층: 저장·검증·전파·정렬·집계. DOM을 모른다
 ├── file-sync.js  # 페이지 세션 한정 JSON 파일 연결과 직렬 쓰기 큐
+├── markdown-export.js # Store 스냅샷 → 결정론적 Obsidian Markdown
+├── markdown-sync.js   # 페이지 세션 한정 Markdown 연결과 직렬 쓰기 큐
 ├── app.js        # UI 계층: 렌더링과 이벤트. Store와 Parse만 호출한다
 ├── tests/
 │   ├── regressions.js  # Node 내장 모듈만 쓰는 회귀 테스트
-│   └── file-sync.js    # 파일 연결·직렬 저장 focused 테스트
+│   ├── file-sync.js    # 파일 연결·직렬 저장 focused 테스트
+│   ├── markdown-export.js # Markdown exact bytes·검증 테스트
+│   └── markdown-sync.js   # Markdown 연결·실패 복구 테스트
 ├── CLAUDE.md     # 이 저장소에서 지켜야 할 제약
 └── docs/
     ├── todo-app-prd.md         # 상세 명세 (기능·데이터 모델·엣지 케이스)

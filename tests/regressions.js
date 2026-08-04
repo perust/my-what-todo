@@ -289,6 +289,10 @@ function makeDocument() {
     addEventListener(type, fn) {
       if (!this.listeners.has(type)) this.listeners.set(type, []);
       this.listeners.get(type).push(fn);
+    },
+    dispatch(type, init = {}) {
+      const event = { type, target: document, ...init };
+      for (const fn of this.listeners.get(type) ?? []) fn(event);
     }
   };
   document.documentElement.ownerDocument = document;
@@ -300,8 +304,11 @@ function loadApp(options = {}) {
   const document = makeDocument();
   const restored = [];
   const fileSnapshots = [];
+  const markdownSnapshots = [];
   let fileStatusHandler = null;
+  let markdownStatusHandler = null;
   let retryCalls = 0;
+  let markdownConnectCalls = 0;
   let loadCount = 0;
   let importCount = 0;
   const categories = [{ id: 'work', name: '업무', hue: 220 }];
@@ -336,7 +343,12 @@ function loadApp(options = {}) {
     FileSync: {
       isSupported() { return true; },
       async connect() { return 'connected'; },
-      save(snapshot) { fileSnapshots.push(snapshot); return Promise.resolve(options.saveResult ?? true); },
+      save(snapshot) {
+        fileSnapshots.push(snapshot);
+        if (options.fileSaveThrows) throw new Error('file sync throw');
+        if (options.fileSaveRejects) return Promise.reject(new Error('file sync reject'));
+        return Promise.resolve(options.saveResult ?? true);
+      },
       async retry() { retryCalls += 1; return options.retryResult ?? true; },
       setErrorHandler() {},
       setStatusHandler(handler) {
@@ -345,6 +357,25 @@ function loadApp(options = {}) {
           phase: 'disconnected', fileName: null, lastSavedAt: null,
           saveError: false, retrying: false
         });
+      }
+    },
+    MarkdownSync: {
+      isSupported() { return options.markdownSupported ?? true; },
+      async connect(getSnapshot) {
+        markdownConnectCalls += 1;
+        if (options.captureMarkdownConnectSnapshot) markdownSnapshots.push(getSnapshot());
+        return options.markdownConnectResult ?? 'connected';
+      },
+      save(snapshot) {
+        markdownSnapshots.push(snapshot);
+        if (options.markdownSaveThrows) throw new Error('markdown sync throw');
+        if (options.markdownSaveRejects) return Promise.reject(new Error('markdown sync reject'));
+        return Promise.resolve(options.markdownSaveResult ?? true);
+      },
+      setErrorHandler() {},
+      setStatusHandler(handler) {
+        markdownStatusHandler = handler;
+        handler({ phase: 'disconnected', fileName: null, lastSavedAt: null, saveError: false });
       }
     },
     Parse: { parseInput: () => ({ title: '', priority: null, tags: [] }) },
@@ -369,7 +400,7 @@ function loadApp(options = {}) {
   source = source.slice(0, end) + `
   globalThis.__appTest = {
     showUndo, showNotice, undo, adoptExternal, render, renderTabs, renderTagBar, setFilter, saved,
-    renderFileStatus,
+    renderFileStatus, renderMarkdownStatus, syncMirrors, queueAdopt,
     setPendingImport(value) { pendingImport = value; },
     setChanging(categoryId, priorityId) { changingCategory = categoryId; changingPriority = priorityId; },
     state() { return { pendingUndo, changingCategory, changingPriority, queuedNotice }; }
@@ -378,9 +409,11 @@ function loadApp(options = {}) {
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox, { filename: 'app.js' });
   return {
-    sandbox, document, Store, restored, fileSnapshots, timers,
+    sandbox, document, Store, restored, fileSnapshots, markdownSnapshots, timers,
     emitFileStatus(state) { fileStatusHandler(state); },
+    emitMarkdownStatus(state) { markdownStatusHandler(state); },
     get retryCalls() { return retryCalls; },
+    get markdownConnectCalls() { return markdownConnectCalls; },
     get loadCount() { return loadCount; }, get importCount() { return importCount; }
   };
 }
@@ -395,6 +428,8 @@ test('연속 삭제는 id 중복 없이 하나의 실행 취소 묶음으로 복
   );
   app.sandbox.__appTest.undo();
   assert.deepEqual(Array.from(app.restored[0], (item) => item.id), ['a', 'shared', 'b']);
+  assert.equal(app.fileSnapshots.length, 1);
+  assert.equal(app.markdownSnapshots.length, 1);
 });
 
 test('외부 상태 채택은 완료 삭제 dialog와 인라인 선택 상태를 모두 닫고 렌더한다', () => {
@@ -409,6 +444,35 @@ test('외부 상태 채택은 완료 삭제 dialog와 인라인 선택 상태를
     changingPriority: app.sandbox.__appTest.state().changingPriority
   }, { changingCategory: null, changingPriority: null });
   assert.equal(app.loadCount, 1);
+  assert.equal(app.fileSnapshots.length, 1);
+  assert.equal(app.markdownSnapshots.length, 1);
+});
+
+test('숨은 탭에서 mirror한 외부 상태는 visible 전환 때 다시 load하거나 저장하지 않고 화면에만 반영한다', () => {
+  const app = loadApp();
+  const hooks = app.sandbox.__appTest;
+  const clearDialog = app.document.getElementById('clear-dialog');
+  clearDialog.open = true;
+  hooks.setChanging('category-item', 'priority-item');
+
+  app.document.hidden = true;
+  hooks.queueAdopt();
+  assert.equal(app.loadCount, 1);
+  assert.equal(app.fileSnapshots.length, 1);
+  assert.equal(app.markdownSnapshots.length, 1);
+  assert.equal(clearDialog.open, true, '숨은 동안에는 UI cleanup을 미룬다');
+
+  app.document.hidden = false;
+  app.document.dispatch('visibilitychange');
+  assert.equal(app.loadCount, 1, '이미 읽은 외부 상태를 다시 load하지 않는다');
+  assert.equal(app.fileSnapshots.length, 1, 'JSON mirror를 중복 저장하지 않는다');
+  assert.equal(app.markdownSnapshots.length, 1, 'Markdown mirror를 중복 저장하지 않는다');
+  assert.equal(clearDialog.open, false);
+  assert.deepEqual({
+    changingCategory: hooks.state().changingCategory,
+    changingPriority: hooks.state().changingPriority
+  }, { changingCategory: null, changingPriority: null });
+  assert.equal(app.document.getElementById('category-tabs').children.length, 2, 'visible 때 render한다');
 });
 
 test('외부 상태 채택은 삭제와 무관한 대기 알림을 보존한다', () => {
@@ -451,6 +515,8 @@ test('가져오기 성공은 과거 undo와 대기 알림을 버리고 가져오
   app.document.getElementById('import-dialog').dispatch('click', { target: button });
 
   assert.equal(app.importCount, 1);
+  assert.equal(app.fileSnapshots.length, 1);
+  assert.equal(app.markdownSnapshots.length, 1);
   assert.equal(hooks.state().pendingUndo, null);
   assert.equal(hooks.state().queuedNotice, null);
   assert.equal(app.document.getElementById('toast').textContent, '1개를 가져왔습니다.');
@@ -458,15 +524,18 @@ test('가져오기 성공은 과거 undo와 대기 알림을 버리고 가져오
   assert.equal(app.restored.length, 0);
 });
 
-test('saved 성공 경계는 변경 직후의 Store 스냅샷을 파일 동기화에 넘긴다', () => {
+test('saved 성공 경계는 변경 직후 하나의 Store 스냅샷을 JSON과 Markdown mirror에 fanout한다', () => {
   const app = loadApp();
   const result = { id: 'changed' };
 
   assert.equal(app.sandbox.__appTest.saved(result), result);
   assert.deepEqual(app.fileSnapshots, [{ todos: [], categories: [{ id: 'work', name: '업무', hue: 220 }] }]);
+  assert.deepEqual(app.markdownSnapshots, app.fileSnapshots);
+  assert.equal(app.markdownSnapshots[0], app.fileSnapshots[0], '두 mirror는 같은 호출 시점 snapshot을 받는다');
 
   app.sandbox.__appTest.saved(null);
   assert.equal(app.fileSnapshots.length, 1);
+  assert.equal(app.markdownSnapshots.length, 1);
 });
 
 test('파일 mirror 실패여도 실제 LocalStorage 정본과 Store mutation 결과를 롤백하지 않는다', async () => {
@@ -616,6 +685,115 @@ test('정적 retry 버튼은 status 밖에 있어 중복 낭독하지 않고 좁
   assert.match(html, /<span id="file-status"[^>]*role="status"[^>]*>[^<]*<\/span>\s*<button[^>]*id="file-retry"[^>]*hidden/);
   const retryButton = /\.file-retry\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
   assert.match(retryButton, /\bflex\s*:\s*none\s*;/);
+});
+
+test('한 mirror의 동기 throw/rejection은 다른 mirror fanout과 mutation 결과를 막지 않는다', async () => {
+  const thrown = loadApp({ markdownSaveThrows: true });
+  const result = { id: 'kept' };
+  assert.equal(thrown.sandbox.__appTest.saved(result), result);
+  assert.equal(thrown.fileSnapshots.length, 1);
+  assert.equal(thrown.markdownSnapshots.length, 1);
+
+  const rejected = loadApp({ markdownSaveRejects: true });
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    assert.equal(rejected.sandbox.__appTest.saved(result), result);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(rejected.fileSnapshots.length, 1);
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+
+  const fileThrown = loadApp({ fileSaveThrows: true });
+  assert.equal(fileThrown.sandbox.__appTest.saved(result), result);
+  assert.equal(fileThrown.fileSnapshots.length, 1);
+  assert.equal(fileThrown.markdownSnapshots.length, 1);
+
+  const fileRejected = loadApp({ fileSaveRejects: true });
+  const fileUnhandled = [];
+  const onFileUnhandled = (error) => fileUnhandled.push(error);
+  process.on('unhandledRejection', onFileUnhandled);
+  try {
+    assert.equal(fileRejected.sandbox.__appTest.saved(result), result);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(fileRejected.markdownSnapshots.length, 1);
+    assert.equal(fileUnhandled.length, 0);
+  } finally {
+    process.off('unhandledRejection', onFileUnhandled);
+  }
+});
+
+test('모든 direct file save 경로는 syncMirrors 하나로 모여 Markdown 누락을 막는다', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+  assert.match(source, /function syncMirrors\(snapshot\)/);
+  assert.equal((source.match(/FileSync\.save\(/g) || []).length, 1);
+  assert.equal((source.match(/MarkdownSync\.save\(/g) || []).length, 1);
+  assert.doesNotMatch(source, /Store\.restore\([\s\S]{0,160}FileSync\.save/);
+});
+
+test('Markdown 상태 UI는 연결·성공·실패 문구와 다시 연결 버튼을 안전하게 렌더한다', () => {
+  const app = loadApp();
+  const status = app.document.getElementById('markdown-status');
+  const button = app.document.getElementById('markdown-connect');
+  assert.equal(status.textContent, 'Markdown 연결 안 됨');
+
+  app.emitMarkdownStatus({ phase: 'connecting', fileName: null, lastSavedAt: null, saveError: false });
+  assert.equal(status.textContent, 'Markdown 연결 중…');
+  assert.equal(button.disabled, true);
+
+  app.sandbox.__appTest.renderMarkdownStatus({
+    phase: 'connected', fileName: 'vault/<x>.md', lastSavedAt: 123, saveError: false
+  }, () => '10:23:45');
+  assert.equal(status.textContent, 'vault/<x>.md Markdown 연결됨 · 마지막 저장 10:23:45');
+  assert.equal(status._htmlWrites, undefined);
+  assert.equal(button.textContent, 'Markdown 다시 연결');
+  assert.equal(button.disabled, false);
+
+  app.sandbox.__appTest.renderMarkdownStatus({
+    phase: 'connected', fileName: 'vault.md', lastSavedAt: 123, saveError: true
+  }, () => '10:23:45');
+  assert.equal(status.textContent, 'Markdown 저장 실패 · 마지막 성공 10:23:45');
+});
+
+test('Markdown 연결 버튼은 지원 여부를 안내하고 picker에 현재 Store snapshot getter를 준다', async () => {
+  const unsupported = loadApp({ markdownSupported: false });
+  unsupported.document.getElementById('markdown-connect').click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(unsupported.markdownConnectCalls, 0);
+  assert.equal(unsupported.document.getElementById('toast').textContent,
+    '이 브라우저는 Markdown 연결을 지원하지 않습니다. JSON 내보내기를 이용해 주세요.');
+
+  const supported = loadApp({ captureMarkdownConnectSnapshot: true });
+  supported.document.getElementById('markdown-connect').click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(supported.markdownConnectCalls, 1);
+  assert.equal(supported.markdownSnapshots[0].categories[0].id, 'work');
+});
+
+test('정적 Markdown script·status·도움말은 CSP와 단방향 읽기 전용 계약을 지킨다', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const exportAt = html.indexOf('<script src="markdown-export.js"></script>');
+  const syncAt = html.indexOf('<script src="markdown-sync.js"></script>');
+  const appAt = html.indexOf('<script src="app.js"></script>');
+  assert.ok(exportAt > 0 && exportAt < syncAt && syncAt < appAt);
+  assert.match(html, /id="markdown-status"[^>]*role="status"/);
+  assert.doesNotMatch(html, /id="markdown-status"[^>]*aria-live=/);
+  assert.match(html, /Markdown[^<]*(읽기 전용|단방향)/);
+  assert.match(html, /현재 Markdown 편집은 앱에 반영되지 않습니다/);
+  assert.doesNotMatch(html, /<script(?![^>]*src=)[^>]*>/);
+});
+
+test('footer의 두 상태 row는 모바일에서 긴 이름을 줄바꿈하고 버튼 폭을 보존한다', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  const wrapper = /\.mirror-statuses\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  const row = /\.mirror-status-row\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(wrapper, /\bmin-width\s*:\s*0\s*;/);
+  assert.match(wrapper, /\bgrid\b|display\s*:\s*grid/);
+  assert.match(row, /\bmin-width\s*:\s*0\s*;/);
+  assert.match(row, /\bdisplay\s*:\s*flex\s*;/);
 });
 
 (async () => {

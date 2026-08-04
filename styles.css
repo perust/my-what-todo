@@ -1809,6 +1809,20 @@ button.badge:hover {
   margin-top: 18px;
 }
 
+.mirror-statuses {
+  flex: 1 1 0;
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.mirror-status-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
 .file-status {
   flex: 1 1 0;
   min-width: 0;
