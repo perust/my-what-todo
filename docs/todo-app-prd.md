@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v3.4 (2026-08-04) — Obsidian Markdown 단방향 자동 생성 4단계 |
+| 문서 버전 | v3.5 (2026-08-04) — JSON 외부 변경 감지·충돌 해결 5A |
 | 제품 코드명 | `daily-todo` (화면에 보이는 이름은 **My What Todo**) |
 | 한 줄 요약 | 해야 할 일을 실행 단위로 쪼개 2단계로 관리하고, 우선순위·태그로 추려 보며 완료율을 확인하는 1인용 웹 앱 |
 | 대상 사용자 | 본인 1명 (단일 기기, 단일 브라우저) |
@@ -587,8 +587,23 @@ checkbox.indeterminate = !item.completed && children.some(c => c.completed);
 - [ ] 취소하거나 후보 쓰기에 실패한 재연결은 기존 파일명과 마지막 성공 저장 시각으로 복귀한다
 - [ ] 연결 중에는 연결 버튼을 비활성화하고, 성공 뒤 문구를 `파일 다시 연결`로 바꾼다
 
-JSON 연결의 파일 핸들 영속화와 외부 파일 변경 감지는 범위가 아니다. 기존
-내보내기/가져오기와 LocalStorage 저장은 계속 독립적으로 동작한다.
+**JSON 외부 변경 감지·충돌 해결 (5A)**
+
+- [ ] `getFile().text()`가 있는 handle은 성공한 own write의 exact JSON text를 handle별 baseline으로 메모리에만 둔다
+- [ ] 자동 save와 retry는 같은 serial job 안에서 `createWritable()` 바로 전에 현재 exact bytes를 baseline과 비교하고, 다르면 write 없이 `conflict:true`로 전환한다
+- [ ] 초기 connect의 첫 쓰기는 사용자가 고른 파일을 앱 상태로 덮는 명시 동작이므로 비교하지 않으며, 같은 drain의 후속 쓰기부터 비교한다
+- [ ] conflict 동안 LocalStorage·UI·Markdown은 유지하고 JSON 자동 저장과 retry만 막는다. 최신 직렬화 성공본은 force 후보로 갱신하며 직렬화 실패는 과거 후보를 무효화한다
+- [ ] `checkExternal()`은 focus와 hidden→visible에서 read-only 비교만 하며 read 오류를 false conflict로 만들지 않는다
+- [ ] footer는 `{파일명} 연결됨 · 외부 변경 감지 · 자동 저장 중지`와 `충돌 해결`을 표시하고 일반 retry는 숨긴다
+- [ ] 해결 선택은 `앱 내용으로 덮어쓰기` / `외부 파일 유지` / `취소`다. force는 실행 시 `Store.exportData()`를 다시 직렬화하고 진행 중 save를 최신 version까지 drain한다
+- [ ] `외부 파일 유지`는 외부 bytes를 전혀 쓰지 않고 JSON 연결만 해제한다. LocalStorage·Markdown·앱 상태는 바꾸지 않는다
+- [ ] `getFile`이 없는 구형/test handle은 기존 저장을 유지하되 감지 불가를 conflict로 오인하지 않는다
+- [ ] 외부 원문·handle·오류 객체는 public state, toast, DOM에 공개하지 않는다
+
+파일 API에는 원자적 compare-and-swap이 없다. 따라서 `getFile().text()` 확인과 실제 write 사이의
+read→write TOCTOU 경쟁은 남는다. 비교를 `createWritable()` 직전 같은 serial job에서 수행해
+창을 최소화하지만, 이 보호는 **best-effort(최선 노력)**이며 외부 프로세스가 그 짧은 사이에
+다시 쓰는 경우까지 원자적으로 막지는 못한다.
 
 **Obsidian Markdown 자동 생성 (4단계)**
 

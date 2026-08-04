@@ -36,6 +36,53 @@ function writableHandle(writes, hooks = {}) {
   };
 }
 
+// File System Access API의 파일 snapshot과 close 시 commit되는 own bytes를 모델링한다.
+function detectableHandle(writes, hooks = {}) {
+  let bytes = hooks.initialBytes ?? 'EXTERNAL INITIAL BYTES';
+  let creates = 0;
+  const handle = {
+    name: hooks.name ?? 'my-what-todo.json',
+    async getFile() {
+      hooks.onGetFile?.();
+      if (hooks.getFileError) throw hooks.getFileError;
+      const snapshot = bytes;
+      return {
+        async text() {
+          hooks.onText?.(snapshot);
+          if (hooks.textError) throw hooks.textError;
+          return snapshot;
+        }
+      };
+    },
+    async createWritable() {
+      creates += 1;
+      hooks.onCreate?.(creates);
+      if (hooks.createError) throw hooks.createError;
+      let staged = bytes;
+      return {
+        async write(text) {
+          hooks.onWrite?.(text, creates);
+          if (hooks.writeError) throw hooks.writeError;
+          staged = text;
+          writes.push(text);
+        },
+        async close() {
+          hooks.onClose?.(staged, creates);
+          if (hooks.closeError) throw hooks.closeError;
+          bytes = staged;
+        },
+        async abort() { hooks.onAbort?.(); }
+      };
+    }
+  };
+  Object.defineProperties(handle, {
+    bytes: { get: () => bytes },
+    creates: { get: () => creates }
+  });
+  handle.externalEdit = (text) => { bytes = text; };
+  return handle;
+}
+
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
@@ -44,7 +91,8 @@ test('초기 상태는 외부에서 바꿀 수 없는 disconnected 스냅샷이�
   const first = FileSync.getState();
   assert.deepEqual({ ...first }, {
     phase: 'disconnected', fileName: null, lastSavedAt: null,
-    saveError: false, retrying: false
+    saveError: false, checkError: false, retryAvailable: false,
+    retrying: false, conflict: false, forcing: false
   });
   assert.equal(Object.isFrozen(first), true);
   assert.throws(() => { first.phase = 'connected'; }, TypeError);
@@ -66,7 +114,8 @@ test('연결 중 상태를 알리고 initial write+close 성공 뒤 실제 이�
   assert.equal(await connecting, 'connected');
   assert.deepEqual({ ...FileSync.getState() }, {
     phase: 'connected', fileName: '오늘 할 일.json', lastSavedAt: 1_234,
-    saveError: false, retrying: false
+    saveError: false, checkError: false, retryAvailable: false,
+    retrying: false, conflict: false, forcing: false
   });
   assert.deepEqual(states.map((state) => state.phase), ['disconnected', 'connecting', 'connected']);
 });
@@ -96,7 +145,8 @@ test('save 실패는 기존 마지막 성공 저장 시각을 바꾸지 않는�
   assert.equal(await FileSync.save({ step: 1 }), false);
   assert.deepEqual({ ...FileSync.getState() }, {
     phase: 'connected', fileName: 'kept.json', lastSavedAt: 100,
-    saveError: true, retrying: false
+    saveError: true, checkError: false, retryAvailable: true,
+    retrying: false, conflict: false, forcing: false
   });
 });
 
@@ -114,7 +164,8 @@ test('취소한 재연결은 기존 파일 이름과 마지막 성공 시각으�
   assert.equal(await FileSync.connect(() => ({ step: 1 })), 'cancelled');
   assert.deepEqual({ ...FileSync.getState() }, {
     phase: 'connected', fileName: 'original.json', lastSavedAt: 300,
-    saveError: false, retrying: false
+    saveError: false, checkError: false, retryAvailable: false,
+    retrying: false, conflict: false, forcing: false
   });
 });
 
@@ -128,7 +179,8 @@ test('후보 쓰기에 실패한 재연결은 기존 파일 이름과 마지막 
   assert.equal(await FileSync.connect(() => ({ step: 1 })), 'error');
   assert.deepEqual({ ...FileSync.getState() }, {
     phase: 'connected', fileName: 'original.json', lastSavedAt: 400,
-    saveError: false, retrying: false
+    saveError: false, checkError: false, retryAvailable: false,
+    retrying: false, conflict: false, forcing: false
   });
 });
 
@@ -215,8 +267,102 @@ test('첫 연결 실패 시 연결 중 save도 false로 완료된다', async () 
   assert.equal(await saving, false);
   assert.deepEqual({ ...FileSync.getState() }, {
     phase: 'disconnected', fileName: null, lastSavedAt: null,
-    saveError: false, retrying: false
+    saveError: false, checkError: false, retryAvailable: false,
+    retrying: false, conflict: false, forcing: false
   });
+});
+
+test('첫 연결 write 대기 중 최신 stringify 실패는 stale 후보를 폐기하고 pending save를 false로 끝낸다', async () => {
+  const errors = [];
+  const candidateWrites = [];
+  let releaseInitial;
+  let initialStarted = false;
+  const staleCandidate = writableHandle(candidateWrites);
+  const baseCreate = staleCandidate.createWritable.bind(staleCandidate);
+  staleCandidate.createWritable = async () => {
+    const writable = await baseCreate();
+    const baseWrite = writable.write.bind(writable);
+    writable.write = async (text) => {
+      await baseWrite(text);
+      if (!initialStarted) {
+        initialStarted = true;
+        await new Promise((resolve) => { releaseInitial = resolve; });
+      }
+    };
+    return writable;
+  };
+  const freshWrites = [];
+  const fresh = writableHandle(freshWrites, { name: 'fresh.json' });
+  let picked = staleCandidate;
+  const FileSync = loadFileSync({ picker: async () => picked, onError: (error) => errors.push(error.message) });
+
+  const connecting = FileSync.connect(() => ({ step: 'A' }));
+  while (!releaseInitial) await new Promise((resolve) => setImmediate(resolve));
+  const savingB = FileSync.save({ step: 'B' });
+  const circular = { step: 'C' };
+  circular.self = circular;
+  assert.equal(await FileSync.save(circular), false);
+  releaseInitial();
+
+  assert.equal(await connecting, 'error');
+  assert.equal(await savingB, false);
+  assert.equal(candidateWrites.length, 1, '유효했던 B가 stale 후보 baseline으로 drain되지 않는다');
+  assert.equal(FileSync.getState().phase, 'disconnected');
+  assert.equal(errors.length, 1, 'C stringify 오류만 한 번 보고하고 connect가 중복 보고하지 않는다');
+
+  picked = fresh;
+  assert.equal(await FileSync.connect(() => ({ step: 'D' })), 'connected');
+  assert.equal(freshWrites.at(-1), JSON.stringify({ step: 'D' }, null, 2));
+});
+
+test('재연결 write 대기 중 stringify 실패는 기존 conflict를 보존하고 후보를 활성화하지 않는다', async () => {
+  const old = detectableHandle([], { name: 'old.json' });
+  const staleWrites = [];
+  let releaseCandidate;
+  let candidateStarted = false;
+  const staleCandidate = writableHandle(staleWrites, { name: 'stale.json' });
+  const baseCreate = staleCandidate.createWritable.bind(staleCandidate);
+  staleCandidate.createWritable = async () => {
+    const writable = await baseCreate();
+    const baseWrite = writable.write.bind(writable);
+    writable.write = async (text) => {
+      await baseWrite(text);
+      if (!candidateStarted) {
+        candidateStarted = true;
+        await new Promise((resolve) => { releaseCandidate = resolve; });
+      }
+    };
+    return writable;
+  };
+  const fresh = detectableHandle([], { name: 'fresh.json' });
+  let picked = old;
+  const errors = [];
+  const FileSync = loadFileSync({ picker: async () => picked, onError: (error) => errors.push(error.message) });
+  await FileSync.connect(() => ({ step: 0 }));
+  old.externalEdit('outside');
+  await FileSync.save({ step: 1 });
+  assert.equal(FileSync.getState().conflict, true);
+
+  picked = staleCandidate;
+  const reconnecting = FileSync.connect(() => ({ step: 'A' }));
+  while (!releaseCandidate) await new Promise((resolve) => setImmediate(resolve));
+  const savingB = FileSync.save({ step: 'B' });
+  const circular = { step: 'C' };
+  circular.self = circular;
+  assert.equal(await FileSync.save(circular), false);
+  releaseCandidate();
+
+  assert.equal(await reconnecting, 'error');
+  assert.equal(await savingB, false);
+  assert.equal(FileSync.getState().fileName, 'old.json');
+  assert.equal(FileSync.getState().conflict, true);
+  assert.equal(staleWrites.length, 1);
+  assert.equal(errors.length, 1);
+
+  picked = fresh;
+  assert.equal(await FileSync.connect(() => ({ step: 'D' })), 'connected');
+  assert.equal(FileSync.getState().fileName, 'fresh.json');
+  assert.equal(FileSync.getState().conflict, false);
 });
 
 test('picker 취소는 조용히 끝나고 기존 연결을 유지한다', async () => {
@@ -476,7 +622,8 @@ test('재연결 후보 close 실패 뒤에도 기존 handle 저장의 새 성공
   assert.equal(await reconnecting, 'error');
   assert.deepEqual({ ...FileSync.getState() }, {
     phase: 'connected', fileName: 'original.json', lastSavedAt: 200,
-    saveError: false, retrying: false
+    saveError: false, checkError: false, retryAvailable: false,
+    retrying: false, conflict: false, forcing: false
   });
 });
 
@@ -559,7 +706,8 @@ test('status handler 예외와 connecting 재진입에도 큐를 유지하고 �
     assert.equal(writes.at(-1), JSON.stringify({ step: 'latest' }, null, 2));
     assert.deepEqual({ ...FileSync.getState() }, {
       phase: 'connected', fileName: 'latest.json', lastSavedAt: 1_700_000_000_000,
-      saveError: false, retrying: false
+      saveError: false, checkError: false, retryAvailable: false,
+    retrying: false, conflict: false, forcing: false
     });
 
     assert.equal(await FileSync.save({ step: 'after-handler-error' }), true);
@@ -777,6 +925,389 @@ test('더 최신 snapshot 직렬화 실패는 현재 handle의 과거 retry를 �
   assert.equal(states.at(-1).saveError, false, 'retry UI가 숨도록 상태를 재발행한다');
   assert.equal(await FileSync.save({ step: 3 }), true);
   assert.equal(writes.at(-1), JSON.stringify({ step: 3 }, null, 2));
+});
+
+test('detectable 연결은 own bytes baseline을 세우고 외부 변경 save를 write 전에 conflict로 막는다', async () => {
+  const writes = [];
+  const handle = detectableHandle(writes);
+  const FileSync = loadFileSync({ picker: async () => handle });
+  assert.equal(await FileSync.connect(() => ({ step: 0 })), 'connected');
+  assert.equal(handle.bytes, JSON.stringify({ step: 0 }, null, 2));
+  assert.equal(await FileSync.save({ step: 1 }), true);
+  assert.equal(handle.bytes, JSON.stringify({ step: 1 }, null, 2));
+
+  handle.externalEdit('{"outside":true}');
+  const creates = handle.creates;
+  assert.equal(await FileSync.save({ step: 'latest-local' }), false);
+  assert.equal(handle.creates, creates, 'preflight mismatch 뒤 createWritable을 호출하지 않는다');
+  assert.equal(handle.bytes, '{"outside":true}');
+  assert.equal(FileSync.getState().conflict, true);
+  assert.equal(FileSync.getState().saveError, false);
+});
+
+test('conflict 중 A/B save는 write 없이 최신 B만 force하고 성공 시 conflict와 시각을 푼다', async () => {
+  let now = 100;
+  const writes = [];
+  const handle = detectableHandle(writes);
+  const FileSync = loadFileSync({ picker: async () => handle, now: () => now });
+  await FileSync.connect(() => ({ step: 0 }));
+  handle.externalEdit('outside');
+  await FileSync.save({ step: 'A' });
+  const creates = handle.creates;
+  assert.equal(await FileSync.save({ step: 'B' }), false);
+  assert.equal(handle.creates, creates);
+  now = 200;
+  assert.equal(await FileSync.forceOverwrite(() => ({ step: 'B' })), true);
+  assert.equal(handle.bytes, JSON.stringify({ step: 'B' }, null, 2));
+  assert.equal(FileSync.getState().conflict, false);
+  assert.equal(FileSync.getState().lastSavedAt, 200);
+});
+
+test('force 중 새 C save를 drain하고 double force를 하나로 합친다', async () => {
+  let releaseForce;
+  let forceStarted = false;
+  let gateForce = false;
+  const writes = [];
+  const handle = detectableHandle(writes);
+  const baseCreate = handle.createWritable.bind(handle);
+  handle.createWritable = async () => {
+    const writable = await baseCreate();
+    const baseWrite = writable.write.bind(writable);
+    writable.write = async (text) => {
+      await baseWrite(text);
+      if (gateForce && !forceStarted) {
+        forceStarted = true;
+        await new Promise((resolve) => { releaseForce = resolve; });
+      }
+    };
+    return writable;
+  };
+  const FileSync = loadFileSync({ picker: async () => handle });
+  await FileSync.connect(() => ({ step: 0 }));
+  handle.externalEdit('outside');
+  await FileSync.save({ step: 'B' });
+  gateForce = true;
+  const force1 = FileSync.forceOverwrite(() => ({ step: 'B' }));
+  const force2 = FileSync.forceOverwrite(() => ({ step: 'ignored-double' }));
+  assert.equal(force2, force1);
+  while (!forceStarted || !releaseForce) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await FileSync.save({ step: 'C' }), false);
+  releaseForce();
+  assert.equal(await force1, true);
+  assert.equal(handle.bytes, JSON.stringify({ step: 'C' }, null, 2));
+  assert.equal(FileSync.getState().conflict, false);
+});
+
+test('force 실패는 conflict를 유지하고 다음 force로 queue를 복구한다', async () => {
+  const errors = [];
+  const writes = [];
+  const handle = detectableHandle(writes);
+  const FileSync = loadFileSync({ picker: async () => handle, onError: (error) => errors.push(error.message) });
+  await FileSync.connect(() => ({ step: 0 }));
+  handle.externalEdit('outside');
+  await FileSync.save({ step: 1 });
+  handle.createWritable = async () => { throw new Error('force failed'); };
+  assert.equal(await FileSync.forceOverwrite(() => ({ step: 1 })), false);
+  assert.equal(FileSync.getState().conflict, true);
+  assert.deepEqual(errors, ['force failed']);
+  handle.createWritable = async () => {
+    let staged;
+    return { async write(text) { staged = text; }, async close() { handle.externalEdit(staged); } };
+  };
+  assert.equal(await FileSync.forceOverwrite(() => ({ step: 2 })), true);
+  assert.equal(FileSync.getState().conflict, false);
+});
+
+test('keepExternal은 외부 bytes를 쓰지 않고 연결 해제하며 force 진행 중에는 busy다', async () => {
+  let release;
+  const writes = [];
+  const handle = detectableHandle(writes);
+  const originalCreate = handle.createWritable.bind(handle);
+  const FileSync = loadFileSync({ picker: async () => handle });
+  await FileSync.connect(() => ({ step: 0 }));
+  handle.externalEdit('outside-kept');
+  await FileSync.save({ step: 1 });
+  handle.createWritable = async () => {
+    const writable = await originalCreate();
+    const originalWrite = writable.write.bind(writable);
+    writable.write = async (text) => { await originalWrite(text); await new Promise((resolve) => { release = resolve; }); };
+    return writable;
+  };
+  const forcing = FileSync.forceOverwrite(() => ({ step: 1 }));
+  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await FileSync.keepExternal(), 'busy');
+  release();
+  await forcing;
+
+  handle.externalEdit('outside-kept-2');
+  await FileSync.save({ step: 2 });
+  const creates = handle.creates;
+  assert.equal(await FileSync.keepExternal(), 'disconnected');
+  assert.equal(handle.creates, creates);
+  assert.equal(handle.bytes, 'outside-kept-2');
+  assert.equal(FileSync.getState().phase, 'disconnected');
+});
+
+test('retry preflight는 그 사이 외부 변경을 overwrite하지 않고 conflict로 바꾼다', async () => {
+  let fail = false;
+  const writes = [];
+  const handle = detectableHandle(writes);
+  const originalCreate = handle.createWritable.bind(handle);
+  handle.createWritable = async () => {
+    if (fail) throw new Error('disk failed');
+    return originalCreate();
+  };
+  const FileSync = loadFileSync({ picker: async () => handle });
+  await FileSync.connect(() => ({ step: 0 }));
+  fail = true;
+  await FileSync.save({ step: 1 });
+  fail = false;
+  handle.externalEdit('outside');
+  const creates = handle.creates;
+  assert.equal(await FileSync.retry(), false);
+  assert.equal(handle.creates, creates);
+  assert.equal(FileSync.getState().conflict, true);
+});
+
+test('checkExternal은 write 없이 unchanged/conflict/unsupported/disconnected를 구분한다', async () => {
+  const writes = [];
+  const handle = detectableHandle(writes);
+  const FileSync = loadFileSync({ picker: async () => handle });
+  assert.equal(await FileSync.checkExternal(), 'disconnected');
+  await FileSync.connect(() => ({ step: 0 }));
+  const creates = handle.creates;
+  assert.equal(await FileSync.checkExternal(), 'unchanged');
+  assert.equal(handle.creates, creates);
+  handle.externalEdit('outside');
+  assert.equal(await FileSync.checkExternal(), 'conflict');
+  assert.equal(handle.creates, creates);
+  assert.equal(FileSync.getState().conflict, true);
+
+  const legacy = loadFileSync({ picker: async () => writableHandle([]) });
+  await legacy.connect(() => ({}));
+  assert.equal(await legacy.checkExternal(), 'unsupported');
+  assert.equal(await legacy.save({ step: 1 }), true);
+  assert.equal(legacy.getState().conflict, false);
+});
+
+test('checkExternal getFile/text 오류는 check error이며 retry를 제공하지 않고 episode를 dedupe한다', async () => {
+  for (const point of ['getFile', 'text']) {
+    const errors = [];
+    const writes = [];
+    const handle = detectableHandle(writes);
+    const FileSync = loadFileSync({ picker: async () => handle, onError: (error) => errors.push(error.message) });
+    await FileSync.connect(() => ({}));
+    if (point === 'getFile') handle.getFile = async () => { throw new Error('read failed'); };
+    else handle.getFile = async () => ({ async text() { throw new Error('read failed'); } });
+    assert.equal(await FileSync.checkExternal(), 'error');
+    assert.deepEqual({ ...FileSync.getState() }, {
+      phase: 'connected', fileName: 'my-what-todo.json', lastSavedAt: 1_700_000_000_000,
+      saveError: false, checkError: true, retryAvailable: false,
+      retrying: false, conflict: false, forcing: false
+    });
+    assert.equal(await FileSync.retry(), false);
+    assert.equal(await FileSync.checkExternal(), 'error');
+    assert.deepEqual(errors, ['read failed']);
+  }
+});
+
+test('transient external check 오류는 같은 handle의 정상 재검사로 자동 복구하고 같은 시각에도 상태를 publish한다', async () => {
+  for (const point of ['getFile', 'text']) {
+    const hooks = {};
+    const writes = [];
+    const states = [];
+    const handle = detectableHandle(writes, hooks);
+    const originalGetFile = handle.getFile.bind(handle);
+    const FileSync = loadFileSync({ picker: async () => handle, now: 100 });
+    FileSync.setStatusHandler((state) => states.push({ ...state }));
+    await FileSync.connect(() => ({ step: 0 }));
+    const writesBeforeCheck = writes.length;
+    const createsBeforeCheck = handle.creates;
+
+    if (point === 'getFile') {
+      handle.getFile = async () => { throw new Error('transient read failed'); };
+    } else {
+      handle.getFile = async () => ({ async text() { throw new Error('transient read failed'); } });
+    }
+    assert.equal(await FileSync.checkExternal(), 'error');
+    assert.equal(FileSync.getState().checkError, true);
+
+    handle.getFile = originalGetFile;
+    assert.equal(await FileSync.checkExternal(), 'unchanged');
+    assert.equal(FileSync.getState().checkError, false);
+    assert.equal(FileSync.getState().saveError, false);
+    assert.equal(FileSync.getState().retryAvailable, false);
+    assert.equal(handle.creates, createsBeforeCheck);
+    assert.equal(writes.length, writesBeforeCheck);
+    assert.equal(states.at(-1).checkError, false, '같은 저장 시각이어도 recovery 상태를 publish한다');
+    assert.equal(states.at(-2).checkError, true);
+  }
+});
+
+test('write failure는 정상 external check로 지우지 않는다', async () => {
+  const hooks = {};
+  const writes = [];
+  const handle = detectableHandle(writes, hooks);
+  const FileSync = loadFileSync({ picker: async () => handle, now: 100 });
+  await FileSync.connect(() => ({ step: 0 }));
+  hooks.createError = new Error('write failed');
+  assert.equal(await FileSync.save({ step: 1 }), false);
+  assert.equal(FileSync.getState().saveError, true);
+  assert.equal(FileSync.getState().retryAvailable, true);
+
+  hooks.createError = null;
+  const createsBeforeCheck = handle.creates;
+  const writesBeforeCheck = writes.length;
+  assert.equal(await FileSync.checkExternal(), 'unchanged');
+  assert.equal(FileSync.getState().saveError, true);
+  assert.equal(FileSync.getState().checkError, false);
+  assert.equal(FileSync.getState().retryAvailable, true);
+  assert.equal(handle.creates, createsBeforeCheck);
+  assert.equal(writes.length, writesBeforeCheck);
+});
+
+test('write 실패 retry의 preflight read 오류는 check error로 전환되고 다음 automatic save가 복구한다', async () => {
+  let now = 100;
+  let writeFails = false;
+  let readFails = false;
+  const errors = [];
+  const writes = [];
+  const handle = detectableHandle(writes);
+  const originalCreate = handle.createWritable.bind(handle);
+  const originalGetFile = handle.getFile.bind(handle);
+  handle.createWritable = async () => {
+    if (writeFails) throw new Error('write failed');
+    return originalCreate();
+  };
+  handle.getFile = async () => {
+    if (readFails) throw new Error('read failed');
+    return originalGetFile();
+  };
+  const FileSync = loadFileSync({
+    picker: async () => handle,
+    now: () => now,
+    onError: (error) => errors.push(error.message)
+  });
+  await FileSync.connect(() => ({ step: 0 }));
+  writeFails = true;
+  assert.equal(await FileSync.save({ step: 1 }), false);
+  assert.equal(FileSync.getState().saveError, true);
+  assert.equal(FileSync.getState().checkError, false);
+  assert.equal(FileSync.getState().retryAvailable, true);
+
+  writeFails = false;
+  readFails = true;
+  assert.equal(await FileSync.retry(), false);
+  assert.equal(FileSync.getState().saveError, false);
+  assert.equal(FileSync.getState().checkError, true);
+  assert.equal(FileSync.getState().retryAvailable, false);
+
+  readFails = false;
+  now = 200;
+  assert.equal(await FileSync.save({ step: 2 }), true);
+  assert.equal(FileSync.getState().saveError, false);
+  assert.equal(FileSync.getState().checkError, false);
+  assert.equal(FileSync.getState().retryAvailable, false);
+  assert.equal(FileSync.getState().lastSavedAt, 200);
+  assert.deepEqual(errors, ['write failed', 'read failed']);
+});
+
+test('conflict reconnect 취소/실패는 old conflict를 보존하고 성공만 새 baseline으로 해제한다', async () => {
+  const old = detectableHandle([], { name: 'old.json' });
+  const broken = { name: 'broken.json', async createWritable() { throw new Error('broken'); } };
+  const fresh = detectableHandle([], { name: 'fresh.json' });
+  let picked = old;
+  const FileSync = loadFileSync({ picker: async () => {
+    if (picked === 'cancel') throw Object.assign(new Error('cancel'), { name: 'AbortError' });
+    return picked;
+  } });
+  await FileSync.connect(() => ({ step: 0 }));
+  old.externalEdit('outside');
+  await FileSync.save({ step: 1 });
+  picked = 'cancel';
+  assert.equal(await FileSync.connect(() => ({ step: 2 })), 'cancelled');
+  assert.equal(FileSync.getState().conflict, true);
+  picked = broken;
+  assert.equal(await FileSync.connect(() => ({ step: 3 })), 'error');
+  assert.equal(FileSync.getState().conflict, true);
+  picked = fresh;
+  assert.equal(await FileSync.connect(() => ({ step: 4 })), 'connected');
+  assert.equal(FileSync.getState().conflict, false);
+  assert.equal(FileSync.getState().fileName, 'fresh.json');
+});
+
+test('candidate initial own write 뒤 drain 전 외부 변경은 stale candidate 활성화를 막는다', async () => {
+  let bytes = 'initial';
+  let creates = 0;
+  let writing = false;
+  let releaseInitial;
+  const candidate = {
+    name: 'candidate.json',
+    async getFile() { const snapshot = bytes; return { async text() { return snapshot; } }; },
+    async createWritable() {
+      creates += 1;
+      let staged;
+      return {
+        async write(text) {
+          staged = text;
+          if (creates === 1) {
+            writing = true;
+            await new Promise((resolve) => { releaseInitial = resolve; });
+          }
+        },
+        async close() {
+          bytes = staged;
+          if (creates === 1) bytes = 'outside-between-drain';
+        }
+      };
+    }
+  };
+  const FileSync = loadFileSync({ picker: async () => candidate });
+  const connecting = FileSync.connect(() => ({ step: 0 }));
+  while (!writing) await new Promise((resolve) => setImmediate(resolve));
+  const saving = FileSync.save({ step: 1 });
+  releaseInitial();
+  assert.equal(await connecting, 'error');
+  assert.equal(await saving, false);
+  assert.equal(creates, 1);
+  assert.equal(FileSync.getState().phase, 'disconnected');
+  assert.equal(FileSync.getState().conflict, false, 'old active handle이 없으므로 candidate conflict를 공개하지 않는다');
+});
+
+test('conflict 중 최신 직렬화 실패는 stale force candidate를 무효화한다', async () => {
+  const writes = [];
+  const handle = detectableHandle(writes);
+  const FileSync = loadFileSync({ picker: async () => handle });
+  await FileSync.connect(() => ({ step: 0 }));
+  handle.externalEdit('outside');
+  await FileSync.save({ step: 1 });
+  const circular = { step: 2 };
+  circular.self = circular;
+  assert.equal(await FileSync.save(circular), false);
+  const creates = handle.creates;
+  assert.equal(await FileSync.forceOverwrite(() => circular), false);
+  assert.equal(handle.creates, creates);
+  assert.equal(handle.bytes, 'outside');
+  assert.equal(FileSync.getState().conflict, true);
+});
+
+test('public conflict state는 frozen boolean만 공개하고 text/error/handle을 숨긴다', async () => {
+  const secret = 'PRIVATE_EXTERNAL_BYTES';
+  const handle = detectableHandle([]);
+  const FileSync = loadFileSync({ picker: async () => handle });
+  await FileSync.connect(() => ({}));
+  handle.externalEdit(secret);
+  await FileSync.save({ local: 'PRIVATE_LOCAL_BYTES' });
+  const state = FileSync.getState();
+  assert.equal(Object.isFrozen(state), true);
+  assert.equal(state.conflict, true);
+  assert.equal(typeof state.conflict, 'boolean');
+  assert.equal(typeof state.forcing, 'boolean');
+  assert.deepEqual(Object.keys(state).sort(),
+    ['checkError', 'conflict', 'fileName', 'forcing', 'lastSavedAt', 'phase',
+      'retryAvailable', 'retrying', 'saveError'].sort());
+  assert.equal(JSON.stringify(state).includes('PRIVATE'), false);
+  assert.equal(Object.values(state).includes(handle), false);
 });
 
 (async () => {

@@ -12,6 +12,8 @@
       accept: { 'application/json': ['.json'] }
     }]
   };
+  const CONFLICT = Symbol('external-file-conflict');
+  const CHECK_FAILED = Symbol('external-file-check-failed');
 
   let handle = null;
   let tail = Promise.resolve();
@@ -23,18 +25,37 @@
   let lastSavedAt = null;
   let generation = 0;
   let failedRecord = null;
+  let conflictRecord = null;
   let retrying = false;
   let retryPromise = null;
+  let forcing = false;
+  let forcePromise = null;
+  const expectedBytes = new WeakMap();
 
   const serialize = (snapshot) => JSON.stringify(snapshot, null, 2);
+  const wrapCheckFailure = (error) => Object.freeze({ marker: CHECK_FAILED, error });
+  const isCheckFailure = (error) => error?.marker === CHECK_FAILED;
+  const reportedError = (error) => isCheckFailure(error) ? error.error : error;
+
+  function hasConflict(target = handle) {
+    return conflictRecord !== null && conflictRecord.handle === target;
+  }
 
   function getState() {
+    const activeFailure = failedRecord !== null && failedRecord.handle === handle && !hasConflict()
+      ? failedRecord
+      : null;
     return Object.freeze({
       phase,
       fileName,
       lastSavedAt,
-      saveError: failedRecord !== null && failedRecord.handle === handle,
-      retrying
+      saveError: activeFailure !== null && activeFailure.kind === 'write',
+      checkError: activeFailure !== null && activeFailure.kind === 'check',
+      retryAvailable:
+        activeFailure !== null && activeFailure.kind === 'write' && activeFailure.text !== null,
+      retrying,
+      conflict: hasConflict(),
+      forcing
     });
   }
 
@@ -76,6 +97,7 @@
     try {
       await writable.write(text);
       await writable.close();
+      expectedBytes.set(target, text);
       return Date.now();
     } catch (error) {
       try {
@@ -87,9 +109,40 @@
     }
   }
 
-  function enqueue(target, text) {
-    const job = tail.then(() => writeFile(target, text));
-    // 한 번 실패해도 다음 스냅샷은 계속 쓸 수 있게 큐 꼬리는 항상 이행시킨다.
+  async function compareExpected(target) {
+    if (typeof target?.getFile !== 'function' || !expectedBytes.has(target)) {
+      return 'unsupported';
+    }
+    try {
+      const file = await target.getFile();
+      const current = await file.text();
+      return current === expectedBytes.get(target) ? 'unchanged' : 'conflict';
+    } catch (error) {
+      throw wrapCheckFailure(error);
+    }
+  }
+
+  function enterConflict(target, text, recordGeneration) {
+    if (target !== handle) return;
+    const wasConflict = hasConflict(target);
+    conflictRecord = Object.freeze({ handle: target, text, generation: recordGeneration });
+    failedRecord = null;
+    if (!wasConflict) publishState();
+  }
+
+  async function guardedWrite(target, text, recordGeneration, initial = false) {
+    if (!initial) {
+      const comparison = await compareExpected(target);
+      if (comparison === 'conflict') {
+        enterConflict(target, text, recordGeneration);
+        throw CONFLICT;
+      }
+    }
+    return writeFile(target, text);
+  }
+
+  function enqueueTask(task) {
+    const job = tail.then(task);
     tail = job.catch(() => {});
     return job;
   }
@@ -100,14 +153,18 @@
 
   async function connect(getSnapshot) {
     if (!isSupported()) return 'unsupported';
-    if (pendingConnection !== null) return 'busy';
+    if (pendingConnection !== null || forcing) return 'busy';
 
     let resolveCompletion;
     const pending = {
       version: 0,
       latestText: null,
+      invalid: false,
+      finished: false,
       completion: new Promise((resolve) => { resolveCompletion = resolve; }),
       finish(success) {
+        if (pending.finished) return;
+        pending.finished = true;
         if (pendingConnection === pending) pendingConnection = null;
         resolveCompletion(success);
       }
@@ -133,14 +190,26 @@
         pending.version += 1;
       }
 
-      // 후보가 picker/write를 기다리는 동안 들어온 최신 스냅샷까지 모두 drain한다.
+      let initial = true;
       while (true) {
+        if (pending.invalid) {
+          pending.finish(false);
+          publish(handle === null ? 'disconnected' : 'connected');
+          return 'error';
+        }
         const version = pending.version;
         const text = pending.latestText;
-        const savedAt = await enqueue(candidate, text);
+        const savedAt = await enqueueTask(() => guardedWrite(candidate, text, generation, initial));
+        initial = false;
+        if (pending.invalid) {
+          pending.finish(false);
+          publish(handle === null ? 'disconnected' : 'connected');
+          return 'error';
+        }
         if (pending.version === version) {
           handle = candidate;
           failedRecord = null;
+          conflictRecord = null;
           publish('connected', safeFileName(candidate), savedAt);
           pending.finish(true);
           return 'connected';
@@ -149,7 +218,7 @@
     } catch (error) {
       pending.finish(false);
       publish(handle === null ? 'disconnected' : 'connected');
-      report(error);
+      if (error !== CONFLICT && !pending.invalid) report(reportedError(error));
       return 'error';
     }
   }
@@ -159,32 +228,54 @@
     const pending = pendingConnection;
     if (currentHandle === null && pending === null) return Promise.resolve(false);
 
+    const currentGeneration = ++generation;
     let text;
-    let currentGeneration;
     try {
-      // 호출 순간 immutable JSON text와 세대를 함께 고정한다.
       text = serialize(snapshot);
-      currentGeneration = ++generation;
     } catch (error) {
-      // 더 최신 상태를 JSON text로 고정하지 못했으면 현재 파일의 과거 실패본을
-      // 다시 쓸 수 없다. 다른 handle에 묶인 실패 레코드는 건드리지 않는다.
-      if (failedRecord?.handle === currentHandle) {
-        failedRecord = null;
-        publishState();
+      if (pending !== null) {
+        pending.invalid = true;
+        pending.version += 1;
       }
+      if (failedRecord?.handle === currentHandle) failedRecord = null;
+      if (conflictRecord?.handle === currentHandle) {
+        conflictRecord = Object.freeze({
+          handle: currentHandle,
+          text: null,
+          generation: currentGeneration
+        });
+      }
+      publishState();
       report(error);
       return Promise.resolve(false);
     }
 
-    if (pending !== null) {
+    if (pending !== null && !pending.invalid) {
       pending.latestText = text;
       pending.version += 1;
     }
 
     if (currentHandle === null) return pending.completion;
+    if (hasConflict(currentHandle)) {
+      conflictRecord = Object.freeze({
+        handle: currentHandle,
+        text,
+        generation: currentGeneration
+      });
+      return Promise.resolve(false);
+    }
 
-    return enqueue(currentHandle, text).then(
-      (savedAt) => {
+    return enqueueTask(async () => {
+      if (hasConflict(currentHandle)) {
+        conflictRecord = Object.freeze({
+          handle: currentHandle,
+          text,
+          generation: currentGeneration
+        });
+        return false;
+      }
+      try {
+        const savedAt = await guardedWrite(currentHandle, text, currentGeneration);
         if (handle === currentHandle) {
           let cleared = false;
           if (
@@ -195,53 +286,69 @@
             cleared = true;
           }
           const published = publish(phase, fileName, savedAt);
-          // 테스트 시계가 같아 시각이 그대로여도 오류 해제는 공개한다.
           if (cleared && !published) publishState();
         }
         return true;
-      },
-      (error) => {
+      } catch (error) {
+        if (error === CONFLICT) return false;
         if (handle === currentHandle) {
+          const kind = isCheckFailure(error) ? 'check' : 'write';
           const firstInEpisode =
-            failedRecord === null || failedRecord.handle !== currentHandle;
+            failedRecord === null || failedRecord.handle !== currentHandle || failedRecord.kind !== kind;
           failedRecord = Object.freeze({
             handle: currentHandle,
             text,
-            generation: currentGeneration
+            generation: currentGeneration,
+            kind
           });
           publishState();
-          if (firstInEpisode) report(error);
+          if (firstInEpisode) report(reportedError(error));
         } else {
-          report(error);
+          report(reportedError(error));
         }
         return false;
       }
-    );
+    });
   }
 
   function retry() {
     if (retryPromise !== null) return retryPromise;
-    if (handle === null || failedRecord === null || failedRecord.handle !== handle) {
+    if (
+      handle === null || hasConflict() || failedRecord === null ||
+      failedRecord.handle !== handle || failedRecord.kind !== 'write' || failedRecord.text === null
+    ) {
       return Promise.resolve(false);
     }
 
     retrying = true;
     publishState();
 
-    // 실행 시점의 실패 레코드를 읽는다. 앞서 queue에 들어온 더 최신 save가 실패하면
-    // 그 text를 쓰며, 성공해 오류가 풀렸다면 오래된 text를 다시 쓰지 않는다.
-    const job = tail.then(async () => {
+    const job = enqueueTask(async () => {
       const record = failedRecord;
-      if (record === null || record.handle !== handle) return true;
-      const savedAt = await writeFile(record.handle, record.text);
-      if (failedRecord === record && handle === record.handle) {
-        failedRecord = null;
-        const published = publish(phase, fileName, savedAt);
-        if (!published) publishState();
+      if (record === null || record.handle !== handle || hasConflict()) return false;
+      try {
+        const savedAt = await guardedWrite(record.handle, record.text, record.generation);
+        if (failedRecord === record && handle === record.handle) {
+          failedRecord = null;
+          const published = publish(phase, fileName, savedAt);
+          if (!published) publishState();
+        }
+        return true;
+      } catch (error) {
+        if (error === CONFLICT) return false;
+        if (isCheckFailure(error) && failedRecord === record && handle === record.handle) {
+          failedRecord = Object.freeze({
+            handle: record.handle,
+            text: record.text,
+            generation: record.generation,
+            kind: 'check'
+          });
+          publishState();
+          report(reportedError(error));
+        }
+        return false;
       }
-      return true;
     });
-    tail = job.catch(() => {});
 
     retryPromise = job.then(
       (result) => result,
@@ -255,6 +362,128 @@
     return retryPromise;
   }
 
+  function checkExternal() {
+    if (handle === null) return Promise.resolve('disconnected');
+    if (pendingConnection !== null || forcing) return Promise.resolve('busy');
+    const checkedHandle = handle;
+    if (typeof checkedHandle.getFile !== 'function' || !expectedBytes.has(checkedHandle)) {
+      return Promise.resolve('unsupported');
+    }
+
+    return enqueueTask(async () => {
+      if (handle !== checkedHandle) return 'disconnected';
+      if (hasConflict(checkedHandle)) return 'conflict';
+      try {
+        const comparison = await compareExpected(checkedHandle);
+        if (comparison === 'conflict') {
+          enterConflict(checkedHandle, null, generation);
+          return 'conflict';
+        }
+        if (failedRecord?.handle === checkedHandle && failedRecord.kind === 'check') {
+          failedRecord = null;
+          publishState();
+        }
+        return comparison;
+      } catch (error) {
+        if (handle === checkedHandle) {
+          const kind = 'check';
+          const firstInEpisode =
+            failedRecord === null || failedRecord.handle !== checkedHandle || failedRecord.kind !== kind;
+          failedRecord = Object.freeze({
+            handle: checkedHandle,
+            text: null,
+            generation,
+            kind
+          });
+          publishState();
+          if (firstInEpisode) report(reportedError(error));
+        }
+        return 'error';
+      }
+    });
+  }
+
+  function forceOverwrite(getSnapshot) {
+    if (forcePromise !== null) return forcePromise;
+    if (handle === null || !hasConflict()) return Promise.resolve(false);
+
+    const forceHandle = handle;
+    const forceGeneration = ++generation;
+    let text;
+    try {
+      const snapshot = typeof getSnapshot === 'function' ? getSnapshot() : getSnapshot;
+      text = serialize(snapshot);
+    } catch (error) {
+      conflictRecord = Object.freeze({
+        handle: forceHandle,
+        text: null,
+        generation: forceGeneration
+      });
+      publishState();
+      report(error);
+      return Promise.resolve(false);
+    }
+
+    conflictRecord = Object.freeze({
+      handle: forceHandle,
+      text,
+      generation: forceGeneration
+    });
+    forcing = true;
+    publishState();
+
+    const job = enqueueTask(async () => {
+      while (handle === forceHandle && hasConflict(forceHandle)) {
+        const record = conflictRecord;
+        if (record.text === null) return false;
+        let savedAt;
+        try {
+          // 사용자가 고른 명시적 해결 동작이므로 preflight 비교 없이 쓴다.
+          savedAt = await writeFile(forceHandle, record.text);
+        } catch (error) {
+          report(error);
+          return false;
+        }
+        if (
+          handle === forceHandle && conflictRecord === record &&
+          conflictRecord.generation === record.generation
+        ) {
+          conflictRecord = null;
+          failedRecord = null;
+          const published = publish(phase, fileName, savedAt);
+          if (!published) publishState();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    forcePromise = job.then(
+      (result) => result,
+      () => false
+    ).then((result) => {
+      forcing = false;
+      forcePromise = null;
+      publishState();
+      return result;
+    });
+    return forcePromise;
+  }
+
+  function keepExternal() {
+    if (handle === null || !hasConflict()) return Promise.resolve(false);
+    if (forcing || pendingConnection !== null) return Promise.resolve('busy');
+
+    generation += 1;
+    handle = null;
+    failedRecord = null;
+    conflictRecord = null;
+    retryPromise = null;
+    retrying = false;
+    publish('disconnected', null, null);
+    return Promise.resolve('disconnected');
+  }
+
   function setErrorHandler(handler) {
     onError = typeof handler === 'function' ? handler : () => {};
   }
@@ -265,6 +494,15 @@
   }
 
   globalThis.FileSync = Object.freeze({
-    connect, save, retry, isSupported, getState, setErrorHandler, setStatusHandler
+    connect,
+    save,
+    retry,
+    checkExternal,
+    forceOverwrite,
+    keepExternal,
+    isSupported,
+    getState,
+    setErrorHandler,
+    setStatusHandler
   });
 })();

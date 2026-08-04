@@ -1837,7 +1837,12 @@ button.badge:hover {
   flex: none;
 }
 
-.file-retry[hidden] {
+.file-conflict-resolve {
+  flex: none;
+}
+
+.file-retry[hidden],
+.file-conflict-resolve[hidden] {
   display: none;
 }
 
@@ -2007,6 +2012,11 @@ button.badge:hover {
 
   .dialog-actions {
     flex-wrap: wrap;
+  }
+
+  .conflict-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .help-list {

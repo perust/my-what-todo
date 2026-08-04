@@ -49,6 +49,8 @@
   const fileConnectButton = document.getElementById('file-connect');
   const fileStatus = document.getElementById('file-status');
   const fileRetryButton = document.getElementById('file-retry');
+  const fileConflictResolveButton = document.getElementById('file-conflict-resolve');
+  const fileConflictDialog = document.getElementById('file-conflict-dialog');
   const markdownConnectButton = document.getElementById('markdown-connect');
   const markdownStatus = document.getElementById('markdown-status');
   const importFile = document.getElementById('import-file');
@@ -1946,7 +1948,7 @@
     if (e.target.closest('[data-choice="close"]')) loginDialog.close();
   });
 
-  for (const dialog of [helpDialog, loginDialog, clearDialog, importDialog]) {
+  for (const dialog of [helpDialog, loginDialog, clearDialog, importDialog, fileConflictDialog]) {
     closeOnOutsideClick(dialog);
   }
 
@@ -2052,10 +2054,24 @@
     }
   });
 
+  let externalCheckPending = false;
+  function requestExternalCheck() {
+    if (externalCheckPending) return;
+    externalCheckPending = true;
+    try {
+      Promise.resolve(FileSync.checkExternal()).catch(() => {}).finally(() => {
+        externalCheckPending = false;
+      });
+    } catch (ignored) {
+      externalCheckPending = false;
+    }
+  }
+
   // 배경 탭에서는 인터벌이 느려진다. 돌아오면 곧바로 다시 맞춘다.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
 
+    requestExternalCheck();
     pomoRefresh();
 
     // 숨어 있는 동안 읽어만 두고 미뤄둔 변경이 있으면 이제 화면에 옮긴다.
@@ -2139,24 +2155,38 @@
     if (state.phase === 'connecting') {
       text = '파일 연결 중…';
     } else if (state.phase === 'connected') {
-      const lastSuccess = state.lastSavedAt === null
-        ? '아직 성공 기록 없음'
-        : `${state.saveError ? '마지막 성공' : '마지막 저장'} ${formatter(state.lastSavedAt)}`;
-      text = state.saveError
-        ? `${state.fileName} 연결됨 · 저장 실패 · ${lastSuccess}`
-        : `${state.fileName} 연결됨 · ${lastSuccess}`;
+      if (state.conflict) {
+        text = `${state.fileName} 연결됨 · 외부 변경 감지 · 자동 저장 중지`;
+      } else if (state.checkError) {
+        text = `${state.fileName} 연결됨 · 외부 변경 확인 실패 · 자동 저장 보류`;
+      } else {
+        const lastSuccess = state.lastSavedAt === null
+          ? '아직 성공 기록 없음'
+          : `${state.saveError ? '마지막 성공' : '마지막 저장'} ${formatter(state.lastSavedAt)}`;
+        text = state.saveError
+          ? `${state.fileName} 연결됨 · 저장 실패 · ${lastSuccess}`
+          : `${state.fileName} 연결됨 · ${lastSuccess}`;
+      }
     }
 
     setText(fileStatus, text);
-    fileConnectButton.disabled = state.phase === 'connecting';
+    fileConnectButton.disabled = state.phase === 'connecting' || !!state.forcing;
     setText(fileConnectButton, state.phase === 'connected' ? '파일 다시 연결' : '파일 연결');
-    fileRetryButton.hidden = !(state.phase === 'connected' && state.saveError);
+    fileRetryButton.hidden = !(
+      state.phase === 'connected' && state.retryAvailable && !state.conflict
+    );
     fileRetryButton.disabled = !!state.retrying;
     setText(fileRetryButton, state.retrying ? '재시도 중…' : '재시도');
+    fileConflictResolveButton.hidden = !(state.phase === 'connected' && state.conflict);
+    fileConflictResolveButton.disabled = !!state.forcing;
+    setText(fileConflictResolveButton, state.forcing ? '해결 중…' : '충돌 해결');
   }
 
   FileSync.setErrorHandler(() => {
-    showNotice('연결한 파일에 저장하지 못했습니다. 브라우저 저장 내용은 그대로 유지됩니다.');
+    const state = FileSync.getState();
+    showNotice(state.checkError
+      ? '연결한 파일의 외부 변경 여부를 확인하지 못했습니다. 브라우저 저장 내용은 그대로 유지됩니다.'
+      : '연결한 파일에 저장하지 못했습니다. 브라우저 저장 내용은 그대로 유지됩니다.');
   });
   FileSync.setStatusHandler(renderFileStatus);
 
@@ -2191,6 +2221,47 @@
     showNotice(success
       ? '파일 저장을 다시 완료했습니다.'
       : '파일 저장 재시도에 실패했습니다.');
+  });
+
+  fileConflictResolveButton.addEventListener('click', () => {
+    if (!fileConflictDialog.open) fileConflictDialog.showModal();
+  });
+
+  fileConflictDialog.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-choice]');
+    if (!button) return;
+    const choice = button.dataset.choice;
+    fileConflictDialog.close();
+    if (choice === 'cancel') return;
+
+    if (choice === 'force') {
+      let success = false;
+      try {
+        success = await FileSync.forceOverwrite(() => Store.exportData());
+      } catch (ignored) {
+        // FileSync가 오류 경계를 가지지만 UI도 rejection을 밖으로 새지 않게 한다.
+      }
+      showNotice(success
+        ? '앱의 최신 내용으로 파일을 덮어썼습니다.'
+        : '덮어쓰지 못했습니다. 외부 변경 충돌은 그대로 유지됩니다.');
+      return;
+    }
+
+    if (choice === 'keep') {
+      let result = false;
+      try {
+        result = await FileSync.keepExternal();
+      } catch (ignored) {
+        // 위와 같은 rejection 경계다.
+      }
+      if (result === 'disconnected') {
+        showNotice('외부 파일을 유지하고 JSON 연결을 해제했습니다.');
+      } else if (result === 'busy') {
+        showNotice('파일 작업이 진행 중입니다. 끝난 뒤 다시 선택해 주세요.');
+      } else {
+        showNotice('외부 파일 유지에 실패했습니다. 충돌은 그대로 유지됩니다.');
+      }
+    }
   });
 
   fileConnectButton.addEventListener('click', async () => {
@@ -2639,6 +2710,8 @@
    * 스물몇 번씩 들어오는데, 그때마다 통째로 다시 읽고 그리면 이 탭에서 고치던 제목과
    * 되돌릴 수 있던 5초가 그 횟수만큼 날아간다. 플래그만 세우고 한 프레임에 한 번만 돈다.
    */
+  addEventListener('focus', requestExternalCheck);
+
   addEventListener('storage', (e) => {
     if (e.key !== null && e.key !== Store.STORAGE_KEY) return;
     queueAdopt();

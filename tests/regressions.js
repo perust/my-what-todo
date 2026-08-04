@@ -306,8 +306,13 @@ function loadApp(options = {}) {
   const fileSnapshots = [];
   const markdownSnapshots = [];
   let fileStatusHandler = null;
+  let fileErrorHandler = null;
+  let currentFileState = null;
   let markdownStatusHandler = null;
   let retryCalls = 0;
+  let forceCalls = 0;
+  let keepExternalCalls = 0;
+  let checkExternalCalls = 0;
   let markdownConnectCalls = 0;
   let loadCount = 0;
   let importCount = 0;
@@ -350,13 +355,29 @@ function loadApp(options = {}) {
         return Promise.resolve(options.saveResult ?? true);
       },
       async retry() { retryCalls += 1; return options.retryResult ?? true; },
-      setErrorHandler() {},
+      forceOverwrite(getSnapshot) {
+        forceCalls += 1;
+        if (options.captureForceSnapshot) fileSnapshots.push(getSnapshot());
+        return Promise.resolve(options.forceResult ?? true);
+      },
+      keepExternal() {
+        keepExternalCalls += 1;
+        return Promise.resolve(options.keepExternalResult ?? 'disconnected');
+      },
+      checkExternal() {
+        checkExternalCalls += 1;
+        return Promise.resolve(options.checkExternalResult ?? 'unchanged');
+      },
+      getState() { return currentFileState; },
+      setErrorHandler(handler) { fileErrorHandler = handler; },
       setStatusHandler(handler) {
         fileStatusHandler = handler;
-        handler({
+        currentFileState = {
           phase: 'disconnected', fileName: null, lastSavedAt: null,
-          saveError: false, retrying: false
-        });
+          saveError: false, checkError: false, retryAvailable: false,
+          retrying: false, conflict: false, forcing: false
+        };
+        handler(currentFileState);
       }
     },
     MarkdownSync: {
@@ -410,9 +431,16 @@ function loadApp(options = {}) {
   vm.runInContext(source, sandbox, { filename: 'app.js' });
   return {
     sandbox, document, Store, restored, fileSnapshots, markdownSnapshots, timers,
-    emitFileStatus(state) { fileStatusHandler(state); },
+    emitFileStatus(state) { currentFileState = state; fileStatusHandler(state); },
+    emitFileError(error = new Error('file error')) { fileErrorHandler(error); },
     emitMarkdownStatus(state) { markdownStatusHandler(state); },
+    dispatchGlobal(type, init = {}) {
+      for (const fn of globalListeners.get(type) ?? []) fn({ type, ...init });
+    },
     get retryCalls() { return retryCalls; },
+    get forceCalls() { return forceCalls; },
+    get keepExternalCalls() { return keepExternalCalls; },
+    get checkExternalCalls() { return checkExternalCalls; },
     get markdownConnectCalls() { return markdownConnectCalls; },
     get loadCount() { return loadCount; }, get importCount() { return importCount; }
   };
@@ -632,7 +660,7 @@ test('파일 실패 상태는 안전한 마지막 성공 문구와 retry 표시�
   const retry = app.document.getElementById('file-retry');
   app.sandbox.__appTest.renderFileStatus({
     phase: 'connected', fileName: 'todos.json', lastSavedAt: null,
-    saveError: true, retrying: false
+    saveError: true, checkError: false, retryAvailable: true, retrying: false
   });
   assert.equal(app.document.getElementById('file-status').textContent,
     'todos.json 연결됨 · 저장 실패 · 아직 성공 기록 없음');
@@ -642,7 +670,7 @@ test('파일 실패 상태는 안전한 마지막 성공 문구와 retry 표시�
 
   app.sandbox.__appTest.renderFileStatus({
     phase: 'connected', fileName: 'todos.json', lastSavedAt: 123,
-    saveError: true, retrying: true
+    saveError: true, checkError: false, retryAvailable: true, retrying: true
   }, () => '10:23:45');
   assert.equal(app.document.getElementById('file-status').textContent,
     'todos.json 연결됨 · 저장 실패 · 마지막 성공 10:23:45');
@@ -655,7 +683,7 @@ test('retry 버튼은 성공/실패 결과를 알리고 상태 없을 때 숨는
   const successRetry = success.document.getElementById('file-retry');
   success.emitFileStatus({
     phase: 'connected', fileName: 'a.json', lastSavedAt: 1,
-    saveError: true, retrying: false
+    saveError: true, checkError: false, retryAvailable: true, retrying: false
   });
   successRetry.click();
   await new Promise((resolve) => setImmediate(resolve));
@@ -666,7 +694,7 @@ test('retry 버튼은 성공/실패 결과를 알리고 상태 없을 때 숨는
   const failureRetry = failure.document.getElementById('file-retry');
   failure.emitFileStatus({
     phase: 'connected', fileName: 'b.json', lastSavedAt: 1,
-    saveError: true, retrying: false
+    saveError: true, checkError: false, retryAvailable: true, retrying: false
   });
   failureRetry.click();
   await new Promise((resolve) => setImmediate(resolve));
@@ -794,6 +822,155 @@ test('footer의 두 상태 row는 모바일에서 긴 이름을 줄바꿈하고 
   assert.match(wrapper, /\bgrid\b|display\s*:\s*grid/);
   assert.match(row, /\bmin-width\s*:\s*0\s*;/);
   assert.match(row, /\bdisplay\s*:\s*flex\s*;/);
+});
+
+test('JSON read-check 오류는 자동 저장 보류 문구를 보이고 retry를 숨기며 정확히 안내한다', () => {
+  const app = loadApp();
+  app.emitFileStatus({
+    phase: 'connected', fileName: 'todos.json', lastSavedAt: 123,
+    saveError: false, checkError: true, retryAvailable: false,
+    retrying: false, conflict: false, forcing: false
+  });
+  assert.equal(app.document.getElementById('file-status').textContent,
+    'todos.json 연결됨 · 외부 변경 확인 실패 · 자동 저장 보류');
+  assert.equal(app.document.getElementById('file-retry').hidden, true);
+  assert.equal(app.document.getElementById('file-connect').disabled, false, '다시 연결은 계속 가능하다');
+  app.emitFileError();
+  assert.equal(app.document.getElementById('toast').textContent,
+    '연결한 파일의 외부 변경 여부를 확인하지 못했습니다. 브라우저 저장 내용은 그대로 유지됩니다.');
+});
+
+test('JSON write 오류는 retryAvailable일 때만 retry를 보이고 기존 저장 실패 안내를 유지한다', () => {
+  const app = loadApp();
+  app.emitFileStatus({
+    phase: 'connected', fileName: 'todos.json', lastSavedAt: 123,
+    saveError: true, checkError: false, retryAvailable: true,
+    retrying: false, conflict: false, forcing: false
+  });
+  assert.equal(app.document.getElementById('file-retry').hidden, false);
+  app.emitFileError();
+  assert.equal(app.document.getElementById('toast').textContent,
+    '연결한 파일에 저장하지 못했습니다. 브라우저 저장 내용은 그대로 유지됩니다.');
+});
+
+test('JSON conflict 상태는 retry를 숨기고 정확한 중지 문구와 해결 버튼만 노출한다', () => {
+  const app = loadApp();
+  app.emitFileStatus({
+    phase: 'connected', fileName: 'todos.json', lastSavedAt: 123,
+    saveError: true, checkError: false, retryAvailable: true, retrying: false, conflict: true, forcing: false
+  });
+  assert.equal(app.document.getElementById('file-status').textContent,
+    'todos.json 연결됨 · 외부 변경 감지 · 자동 저장 중지');
+  assert.equal(app.document.getElementById('file-retry').hidden, true);
+  const resolve = app.document.getElementById('file-conflict-resolve');
+  assert.equal(resolve.hidden, false);
+  assert.equal(resolve.disabled, false);
+  assert.equal(resolve.textContent, '충돌 해결');
+
+  app.emitFileStatus({
+    phase: 'connected', fileName: 'todos.json', lastSavedAt: 123,
+    saveError: false, retrying: false, conflict: false, forcing: false
+  });
+  assert.equal(resolve.hidden, true);
+});
+
+test('충돌 해결 dialog는 세 선택을 정확한 FileSync 메서드와 안전한 notice로 연결한다', async () => {
+  const force = loadApp({ captureForceSnapshot: true, forceResult: true });
+  force.document.getElementById('file-conflict-resolve').click();
+  const forceDialog = force.document.getElementById('file-conflict-dialog');
+  assert.equal(forceDialog.open, true);
+  const forceButton = new FakeElement('button', force.document);
+  forceButton.dataset.choice = 'force';
+  forceDialog.dispatch('click', { target: forceButton });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(force.forceCalls, 1);
+  assert.equal(force.fileSnapshots[0].categories[0].id, 'work');
+  assert.equal(force.keepExternalCalls, 0);
+  assert.equal(force.document.getElementById('toast').textContent,
+    '앱의 최신 내용으로 파일을 덮어썼습니다.');
+
+  const keep = loadApp({ keepExternalResult: 'disconnected' });
+  const keepDialog = keep.document.getElementById('file-conflict-dialog');
+  keepDialog.showModal();
+  const keepButton = new FakeElement('button', keep.document);
+  keepButton.dataset.choice = 'keep';
+  keepDialog.dispatch('click', { target: keepButton });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(keep.keepExternalCalls, 1);
+  assert.equal(keep.forceCalls, 0);
+  assert.equal(keep.fileSnapshots.length, 0, 'Local JSON mirror save를 새로 만들지 않는다');
+  assert.equal(keep.markdownSnapshots.length, 0, 'Markdown mirror를 건드리지 않는다');
+  assert.equal(keep.document.getElementById('toast').textContent,
+    '외부 파일을 유지하고 JSON 연결을 해제했습니다.');
+
+  const cancelled = loadApp();
+  const cancelDialog = cancelled.document.getElementById('file-conflict-dialog');
+  cancelDialog.showModal();
+  const cancelButton = new FakeElement('button', cancelled.document);
+  cancelButton.dataset.choice = 'cancel';
+  cancelDialog.dispatch('click', { target: cancelButton });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(cancelDialog.open, false);
+  assert.equal(cancelled.forceCalls, 0);
+  assert.equal(cancelled.keepExternalCalls, 0);
+});
+
+test('충돌 해결 실패와 busy는 rejection 없이 conflict 유지 안내를 한다', async () => {
+  const forceFail = loadApp({ forceResult: false });
+  const dialog = forceFail.document.getElementById('file-conflict-dialog');
+  dialog.showModal();
+  const button = new FakeElement('button', forceFail.document);
+  button.dataset.choice = 'force';
+  dialog.dispatch('click', { target: button });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(forceFail.document.getElementById('toast').textContent,
+    '덮어쓰지 못했습니다. 외부 변경 충돌은 그대로 유지됩니다.');
+
+  const busy = loadApp({ keepExternalResult: 'busy' });
+  const busyDialog = busy.document.getElementById('file-conflict-dialog');
+  busyDialog.showModal();
+  const keepButton = new FakeElement('button', busy.document);
+  keepButton.dataset.choice = 'keep';
+  busyDialog.dispatch('click', { target: keepButton });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(busy.document.getElementById('toast').textContent,
+    '파일 작업이 진행 중입니다. 끝난 뒤 다시 선택해 주세요.');
+});
+
+test('window focus와 hidden→visible은 checkExternal을 이벤트당 한 번 호출하고 rejection을 흡수한다', async () => {
+  const app = loadApp();
+  app.dispatchGlobal('focus');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(app.checkExternalCalls, 1);
+
+  app.document.hidden = true;
+  app.document.dispatch('visibilitychange');
+  assert.equal(app.checkExternalCalls, 1);
+  app.document.hidden = false;
+  app.document.dispatch('visibilitychange');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(app.checkExternalCalls, 2);
+});
+
+test('정적 충돌 dialog와 버튼은 정확한 세 선택·접근성·모바일 줄바꿈 계약을 가진다', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  assert.match(html, /id="file-conflict-resolve"[^>]*hidden[^>]*>충돌 해결<\/button>/);
+  assert.match(html, /<dialog id="file-conflict-dialog"[^>]*aria-labelledby="file-conflict-dialog-title"/);
+  assert.match(html, /data-choice="force"[^>]*>앱 내용으로 덮어쓰기<\/button>/);
+  assert.match(html, /data-choice="keep"[^>]*>외부 파일 유지<\/button>/);
+  assert.match(html, /data-choice="cancel"[^>]*>취소<\/button>/);
+  assert.match(css, /\.file-conflict-resolve\s*\{[^}]*flex\s*:\s*none/s);
+  assert.match(css, /@media[^{}]*\(max-width:[^)]*\)[\s\S]*?\.conflict-actions\s*\{[^}]*flex-direction\s*:\s*column/s);
+});
+
+test('도움말과 PRD는 JSON 외부 변경 보호와 read→write TOCTOU 잔여 한계를 명시한다', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const prd = fs.readFileSync(path.join(ROOT, 'docs/todo-app-prd.md'), 'utf8');
+  assert.match(html, /외부 변경[^<]*(감지|충돌)/);
+  assert.match(`${readme}\n${prd}`, /TOCTOU|read.?→.?write|읽기.?→.?쓰기/i);
+  assert.match(`${readme}\n${prd}`, /best-effort|최선 노력/i);
 });
 
 (async () => {
