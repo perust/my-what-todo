@@ -1559,6 +1559,44 @@ button.badge:hover {
   color: var(--text-dim);
 }
 
+/* 넣는 버튼과 닫는 버튼. **hover로 숨기지 않는다** — 이 줄은 지금 무엇을 해야 하는지
+   알려주는 자리라, 터치 화면에서 안 보이면 마우스 없이는 빠져나갈 길이 사라진다. */
+.todo-draft-add,
+.todo-draft-close {
+  flex: none;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.todo-draft-add {
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--focus);
+  border-color: var(--focus);
+}
+
+.todo-draft-close {
+  width: 30px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.todo-draft-add:hover,
+.todo-draft-close:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.todo-draft-close:hover {
+  color: var(--text);
+}
+
 /* ── 삭제 ───────────────────────────────────────────── */
 
 .todo-delete {

@@ -1163,7 +1163,13 @@
         add.type = 'button';
         add.dataset.action = 'add-child';
         add.textContent = '+';
-        add.setAttribute('aria-label', `하위 할 일 추가: ${item.title}`);
+        // 이 버튼은 열고 닫는다. 지금 어느 쪽인지 이름과 상태로 함께 알린다.
+        const open = childDraftFor === item.id;
+        add.setAttribute('aria-expanded', String(open));
+        add.setAttribute(
+          'aria-label',
+          open ? `하위 할 일 입력 닫기: ${item.title}` : `하위 할 일 추가: ${item.title}`
+        );
         row.appendChild(add);
       }
     }
@@ -1198,6 +1204,22 @@
       childDraftText = draft.value;
     });
 
+    /** Enter와 `추가` 버튼이 같은 길을 탄다. 둘이 갈라지면 한쪽만 고치게 된다. */
+    const submit = () => {
+      const parsed = Parse.parseInput(draft.value);
+      if (!parsed.title) {
+        draft.focus(); // 빈 칸으로 누른 것은 취소가 아니다. 닫으려면 옆의 ×가 있다.
+        return;
+      }
+      if (fits(parsed.title) && saved(Store.addChild(root.id, parsed))) {
+        childDraftText = ''; // 넣었으니 빈 칸으로 다시 연다
+        focusDraft = true;
+        render(); // 입력창은 그 자리에 다시 열린다
+      } else {
+        draft.focus();
+      }
+    };
+
     draft.addEventListener('keydown', (e) => {
       if (e.isComposing) return;
 
@@ -1209,21 +1231,27 @@
       if (e.key !== 'Enter') return;
       e.preventDefault();
 
-      const parsed = Parse.parseInput(draft.value);
-      if (!parsed.title) {
-        closeChildDraft(); // 빈 상태로 Enter → 닫힘
-        return;
-      }
-      if (fits(parsed.title) && saved(Store.addChild(root.id, parsed))) {
-        childDraftText = ''; // 넣었으니 빈 칸으로 다시 연다
-        focusDraft = true;
-        render(); // 입력창은 그 자리에 다시 열린다
-      } else {
-        draft.focus();
-      }
+      // 빈 상태의 Enter는 "다 넣었다"는 뜻으로 계속 받는다. 키보드만 쓰는 사람에게는
+      // ×까지 Tab으로 가는 것보다 빠르다. 화면의 출구는 아래 두 버튼이 맡는다.
+      if (!Parse.parseInput(draft.value).title) closeChildDraft();
+      else submit();
     });
 
-    row.appendChild(draft);
+    // 마우스만 쓰는 사람에게는 Enter가 보이지 않는다. 넣는 버튼과 닫는 버튼을
+    // 화면에 둔다. hover로 숨기지 않는다 — 터치 화면에는 hover가 없다.
+    const add = el('button', 'todo-draft-add');
+    add.type = 'button';
+    add.textContent = '추가';
+    add.setAttribute('aria-label', `하위 할 일 추가: ${root.title}`);
+    add.addEventListener('click', submit);
+
+    const close = el('button', 'todo-draft-close');
+    close.type = 'button';
+    close.textContent = '×';
+    close.setAttribute('aria-label', `하위 할 일 입력 닫기: ${root.title}`);
+    close.addEventListener('click', closeChildDraft);
+
+    row.append(draft, add, close);
     li.appendChild(row);
     return li;
   }
@@ -1319,7 +1347,12 @@
     input.focus();
   }
 
+  /** `+`는 여는 버튼이자 닫는 버튼이다. 연 것을 같은 자리에서 닫는 것이 자연스럽다. */
   function openChildDraft(rootId) {
+    if (childDraftFor === rootId) {
+      closeChildDraft();
+      return;
+    }
     // 다른 상위에서 치다 만 내용이 따라오면 안 된다
     if (childDraftFor !== rootId) childDraftText = '';
     childDraftFor = rootId;
