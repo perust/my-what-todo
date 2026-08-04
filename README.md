@@ -24,11 +24,14 @@
 
 ## 실행 방법
 
-빌드 없이 정적 파일 그대로 올려 쓰는 앱입니다. 직접 돌려보려면 로컬 서버로 띄웁니다.
+**바로 써보기 → <https://perust.github.io/my-what-todo/>**
+
+빌드 없이 정적 파일 그대로 올려 쓰는 앱입니다. 이 저장소가 GitHub Pages로 그대로
+서비스되므로 따로 배포할 것이 없습니다. 직접 돌려보려면 로컬 서버로 띄웁니다.
 
 ```bash
-git clone https://github.com/perust/my-task-todo.git
-cd my-task-todo
+git clone https://github.com/perust/my-what-todo.git
+cd my-what-todo
 python3 -m http.server 8000
 ```
 
