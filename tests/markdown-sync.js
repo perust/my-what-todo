@@ -74,12 +74,12 @@ test('초기 frozen 상태에는 원문이나 오류 객체가 없고 disconnect
   const state = sync.getState();
   assert.deepEqual({ ...state }, {
     phase: 'disconnected', fileName: null, lastSavedAt: null, saveError: false,
-    checkError: false, conflict: false, forcing: false
+    checkError: false, conflict: false, forcing: false, importing: false
   });
   assert.equal(Object.isFrozen(state), true);
   assert.throws(() => { state.phase = 'connected'; }, TypeError);
   assert.deepEqual(Object.keys(state), [
-    'phase', 'fileName', 'lastSavedAt', 'saveError', 'checkError', 'conflict', 'forcing'
+    'phase', 'fileName', 'lastSavedAt', 'saveError', 'checkError', 'conflict', 'forcing', 'importing'
   ]);
 });
 
@@ -98,7 +98,7 @@ test('Markdown picker 옵션과 현재 snapshot initial write+close를 정확히
   assert.equal(closes, 1);
   assert.deepEqual({ ...sync.getState() }, {
     phase: 'connected', fileName: 'vault.md', lastSavedAt: 1_700_000_000_000, saveError: false,
-    checkError: false, conflict: false, forcing: false
+    checkError: false, conflict: false, forcing: false, importing: false
   });
 });
 
@@ -186,13 +186,13 @@ test('picker 취소와 후보 initial write 실패는 기존 연결·시각·오
   assert.equal(await sync.connect(() => ({ step: 2 })), 'cancelled');
   assert.deepEqual({ ...sync.getState() }, {
     phase: 'connected', fileName: 'old.md', lastSavedAt: 100, saveError: true,
-    checkError: false, conflict: false, forcing: false
+    checkError: false, conflict: false, forcing: false, importing: false
   });
   picked = broken;
   assert.equal(await sync.connect(() => ({ step: 3 })), 'error');
   assert.deepEqual({ ...sync.getState() }, {
     phase: 'connected', fileName: 'old.md', lastSavedAt: 100, saveError: true,
-    checkError: false, conflict: false, forcing: false
+    checkError: false, conflict: false, forcing: false, importing: false
   });
   assert.deepEqual(errors, ['old fail', 'candidate fail']);
 });
@@ -316,7 +316,7 @@ test('첫 연결 initial write gate 중 최신 render 실패는 stale candidate�
   assert.deepEqual(writes, ['OK:0\n']);
   assert.deepEqual({ ...sync.getState() }, {
     phase: 'disconnected', fileName: null, lastSavedAt: null, saveError: false,
-    checkError: false, conflict: false, forcing: false
+    checkError: false, conflict: false, forcing: false, importing: false
   });
   assert.deepEqual(errors, ['private malformed payload']);
 });
@@ -356,7 +356,7 @@ test('재연결 initial write gate 중 최신 render 실패는 old handle/state�
   assert.deepEqual(oldWrites, ['OK:0\n']);
   assert.deepEqual({ ...sync.getState() }, {
     phase: 'connected', fileName: 'old.md', lastSavedAt: 100, saveError: true,
-    checkError: false, conflict: false, forcing: false
+    checkError: false, conflict: false, forcing: false, importing: false
   });
   assert.deepEqual(errors, ['newer render failed']);
 
@@ -426,7 +426,7 @@ test('detectable baseline은 unchanged save를 허용하고 external mismatch는
   assert.equal(sync.getState().conflict, true);
   assert.equal(JSON.stringify(sync.getState()).includes('EXTERNAL PRIVATE'), false);
   assert.deepEqual(Object.keys(sync.getState()), [
-    'phase', 'fileName', 'lastSavedAt', 'saveError', 'checkError', 'conflict', 'forcing'
+    'phase', 'fileName', 'lastSavedAt', 'saveError', 'checkError', 'conflict', 'forcing', 'importing'
   ]);
 });
 
@@ -686,6 +686,326 @@ test('conflict 재연결 취소/초기 실패는 active conflict를 보존하고
   assert.equal(sync.getState().conflict, false);
   assert.equal(sync.getState().fileName, 'fresh.md');
   assert.equal(await sync.checkExternal(), 'unchanged', '성공한 initial bytes가 새 baseline이다');
+});
+
+test('readConflict는 frozen ready 결과와 frozen opaque token만 반환하고 큐 뒤에서 정확한 원문을 읽는다', async () => {
+  let releaseWrite;
+  let blockWrite = false;
+  let reads = 0;
+  const file = detectableHandle('', {
+    onWrite: async () => { if (blockWrite) await new Promise((resolve) => { releaseWrite = resolve; }); },
+    onGetFile: () => { reads += 1; }
+  });
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('외부 원문\nPRIVATE');
+  await sync.checkExternal();
+  blockWrite = true;
+  const forcing = sync.forceOverwrite(() => ({ step: 1 }));
+  while (!releaseWrite) await tick();
+  assert.deepEqual({ ...await sync.readConflict() }, { status: 'busy' });
+  releaseWrite();
+  await forcing;
+  file.external('외부 원문\nPRIVATE');
+  await sync.checkExternal();
+  const before = reads;
+  const result = await sync.readConflict();
+  assert.equal(reads, before + 1);
+  assert.equal(result.status, 'ready');
+  assert.equal(result.text, '외부 원문\nPRIVATE');
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(Object.isFrozen(result.token), true);
+  assert.deepEqual(Object.keys(result.token), []);
+  assert.equal(JSON.stringify(sync.getState()).includes('PRIVATE'), false);
+});
+
+test('readConflict 상태 결과는 disconnected/not-conflict/unsupported/busy 모두 frozen {status}다', async () => {
+  const file = detectableHandle('');
+  const sync = loadSync({ picker: async () => file.handle });
+  for (const [actual, status] of [[await sync.readConflict(), 'disconnected']]) {
+    assert.deepEqual({ ...actual }, { status }); assert.equal(Object.isFrozen(actual), true);
+  }
+  await sync.connect(() => ({ step: 0 }));
+  assert.deepEqual({ ...await sync.readConflict() }, { status: 'not-conflict' });
+  file.external('outside');
+  await sync.checkExternal();
+  delete file.handle.getFile;
+  const unsupported = await sync.readConflict();
+  assert.deepEqual({ ...unsupported }, { status: 'unsupported' });
+  assert.equal(Object.isFrozen(unsupported), true);
+});
+
+test('readConflict 오류는 reject하지 않고 한 번 보고하며 conflict와 비공개 상태를 보존한다', async () => {
+  let fail = false;
+  const errors = [];
+  const file = detectableHandle('', { onText: () => { if (fail) throw new Error('PRIVATE READ'); } });
+  const sync = loadSync({ picker: async () => file.handle, onError: (error) => { errors.push(error.message); throw new Error('handler'); } });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('outside');
+  await sync.checkExternal();
+  fail = true;
+  const result = await sync.readConflict();
+  assert.deepEqual({ ...result }, { status: 'error' });
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(sync.getState().conflict, true);
+  assert.deepEqual(errors, ['PRIVATE READ']);
+  assert.equal(JSON.stringify(sync.getState()).includes('PRIVATE'), false);
+});
+
+test('importConflict는 forged/stale/다른 handle token을 거절하고 changed에서 token을 한 번 소비한다', async () => {
+  const first = detectableHandle('', { name: 'first.md' });
+  const second = detectableHandle('', { name: 'second.md' });
+  let picked = first.handle;
+  let applies = 0;
+  const sync = loadSync({ picker: async () => picked });
+  await sync.connect(() => ({ step: 0 }));
+  first.external('A');
+  await sync.checkExternal();
+  assert.deepEqual({ ...await sync.importConflict(Object.freeze({}), () => ({ step: 1 })) }, { status: 'stale' });
+  const token = (await sync.readConflict()).token;
+  first.external('B');
+  assert.deepEqual({ ...await sync.importConflict(token, () => { applies += 1; return { step: 2 }; }) }, { status: 'changed' });
+  assert.equal(applies, 0);
+  assert.equal(first.creates, 1);
+  assert.deepEqual({ ...await sync.importConflict(token, () => ({ step: 3 })) }, { status: 'stale' });
+  const oldToken = (await sync.readConflict()).token;
+  picked = second.handle;
+  await sync.connect(() => ({ step: 4 }));
+  assert.deepEqual({ ...await sync.importConflict(oldToken, () => ({ step: 5 })) }, { status: 'stale' });
+});
+
+test('force로 해결한 뒤 같은 handle·같은 원문의 새 conflict에는 old token을 재사용하지 않는다', async () => {
+  let applies = 0;
+  const file = detectableHandle('');
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('X');
+  assert.equal(await sync.checkExternal(), 'conflict');
+  const oldToken = (await sync.readConflict()).token;
+
+  assert.equal(await sync.forceOverwrite(() => ({ step: 1 })), true);
+  file.external('X');
+  assert.equal(await sync.checkExternal(), 'conflict');
+  const createsBeforeOldImport = file.creates;
+  const writesBeforeOldImport = file.writes.length;
+
+  const stale = await sync.importConflict(oldToken, () => { applies += 1; return { step: 2 }; });
+  assert.deepEqual({ ...stale }, { status: 'stale' });
+  assert.equal(Object.isFrozen(stale), true);
+  assert.equal(applies, 0);
+  assert.equal(file.creates, createsBeforeOldImport);
+  assert.equal(file.writes.length, writesBeforeOldImport);
+  assert.equal(sync.getState().conflict, true);
+
+  const currentToken = (await sync.readConflict()).token;
+  assert.deepEqual({ ...await sync.importConflict(currentToken, () => { applies += 1; return { step: 3 }; }) }, { status: 'imported' });
+  assert.equal(applies, 1);
+  assert.equal(file.bytes, 'STEP:3\n');
+});
+
+test('keepExternal 후 같은 handle 재연결·같은 원문의 새 conflict에도 old token은 stale이다', async () => {
+  let applies = 0;
+  const file = detectableHandle('');
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('SAME');
+  assert.equal(await sync.checkExternal(), 'conflict');
+  const oldToken = (await sync.readConflict()).token;
+
+  assert.equal(await sync.keepExternal(), 'disconnected');
+  assert.equal(await sync.connect(() => ({ step: 1 })), 'connected');
+  file.external('SAME');
+  assert.equal(await sync.checkExternal(), 'conflict');
+  const createsBefore = file.creates;
+  assert.deepEqual({ ...await sync.importConflict(oldToken, () => { applies += 1; return { step: 2 }; }) }, { status: 'stale' });
+  assert.equal(applies, 0);
+  assert.equal(file.creates, createsBefore);
+  assert.equal(sync.getState().conflict, true);
+});
+
+test('token은 같은 active conflict의 save 갱신과 반복 checkExternal 동안 유효하다', async () => {
+  let applies = 0;
+  const file = detectableHandle('');
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('PREVIEW');
+  assert.equal(await sync.checkExternal(), 'conflict');
+  const token = (await sync.readConflict()).token;
+
+  assert.equal(await sync.save({ step: 1 }), false);
+  assert.equal(await sync.checkExternal(), 'conflict');
+  assert.equal(await sync.checkExternal(), 'conflict');
+  assert.deepEqual({ ...await sync.importConflict(token, () => { applies += 1; return { step: 2 }; }) }, { status: 'imported' });
+  assert.equal(applies, 1);
+  assert.equal(file.bytes, 'STEP:2\n');
+});
+
+test('importConflict apply는 verified text를 동기 전달하고 null/throw/thenable을 write 없이 구분한다', async () => {
+  const cases = [
+    ['apply-failed', () => null, null],
+    ['apply-error', () => { throw new Error('apply private'); }, 'apply private'],
+    ['apply-error', () => Promise.resolve({ step: 9 }), null]
+  ];
+  for (const [status, apply, message] of cases) {
+    const errors = [];
+    const file = detectableHandle('');
+    const sync = loadSync({ picker: async () => file.handle, onError: (error) => errors.push(error.message) });
+    await sync.connect(() => ({ step: 0 }));
+    file.external('VERIFIED');
+    await sync.checkExternal();
+    const ready = await sync.readConflict();
+    let seen;
+    const result = await sync.importConflict(ready.token, (text) => { seen = text; return apply(); });
+    assert.deepEqual({ ...result }, { status });
+    assert.equal(seen, 'VERIFIED');
+    assert.equal(file.creates, 1);
+    assert.equal(sync.getState().conflict, true);
+    assert.deepEqual(errors, message ? [message] : []);
+    assert.equal('text' in result, false);
+  }
+});
+
+test('apply 후 render 오류는 applied-render-error이며 Store-side 적용을 되돌리지 않고 write하지 않는다', async () => {
+  let marker = false;
+  const errors = [];
+  const file = detectableHandle('');
+  const sync = loadSync({
+    picker: async () => file.handle,
+    render: (snapshot) => { if (snapshot.bad) throw new Error('render private'); return `OK:${snapshot.step}\n`; },
+    onError: (error) => errors.push(error.message)
+  });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('EXTERNAL');
+  await sync.checkExternal();
+  const ready = await sync.readConflict();
+  const result = await sync.importConflict(ready.token, () => { marker = true; return { bad: true }; });
+  assert.deepEqual({ ...result }, { status: 'applied-render-error' });
+  assert.equal(marker, true);
+  assert.equal(file.creates, 1);
+  assert.equal(sync.getState().conflict, true);
+  assert.deepEqual(errors, ['render private']);
+});
+
+test('성공 import는 canonical을 쓰고 conflict를 해제하며 importing lifecycle과 시각을 갱신한다', async () => {
+  let clock = 10;
+  const states = [];
+  const file = detectableHandle('');
+  const sync = loadSync({ picker: async () => file.handle, now: () => clock, render: (s) => `CANON:${s.step}\n` });
+  sync.setStatusHandler((state) => states.push({ ...state }));
+  await sync.connect(() => ({ step: 0 }));
+  file.external('external');
+  await sync.checkExternal();
+  const ready = await sync.readConflict();
+  clock = 20;
+  const promise = sync.importConflict(ready.token, (text) => ({ step: text.length }));
+  assert.equal(sync.getState().importing, true);
+  const result = await promise;
+  assert.deepEqual({ ...result }, { status: 'imported' });
+  assert.equal(file.bytes, 'CANON:8\n');
+  assert.equal(sync.getState().conflict, false);
+  assert.equal(sync.getState().importing, false);
+  assert.equal(sync.getState().lastSavedAt, 20);
+  assert.equal(states.some((state) => state.importing), true);
+  assert.equal(states.at(-1).importing, false);
+});
+
+test('import write 실패는 applied-write-error와 conflict를 보존하고 새 token import로 복구한다', async () => {
+  let fail = false;
+  let aborts = 0;
+  const errors = [];
+  const file = detectableHandle('', {
+    onWrite: () => { if (fail) throw new Error('disk private'); },
+    onAbort: () => { aborts += 1; }
+  });
+  const sync = loadSync({ picker: async () => file.handle, onError: (error) => errors.push(error.message) });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('external');
+  await sync.checkExternal();
+  fail = true;
+  let ready = await sync.readConflict();
+  assert.deepEqual({ ...await sync.importConflict(ready.token, () => ({ step: 1 })) }, { status: 'applied-write-error' });
+  assert.equal(sync.getState().conflict, true);
+  assert.equal(sync.getState().importing, false);
+  assert.equal(aborts, 1);
+  fail = false;
+  ready = await sync.readConflict();
+  assert.deepEqual({ ...await sync.importConflict(ready.token, () => ({ step: 2 })) }, { status: 'imported' });
+  assert.equal(file.bytes, 'STEP:2\n');
+  assert.deepEqual(errors, ['disk private']);
+});
+
+test('in-flight import는 동일 호출 coalesce하고 save 최신값을 drain하며 다른 conflict 조작은 busy다', async () => {
+  let release;
+  let block = false;
+  let applies = 0;
+  const file = detectableHandle('', { onWrite: async () => {
+    if (block) { block = false; await new Promise((resolve) => { release = resolve; }); }
+  } });
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('external');
+  await sync.checkExternal();
+  const { token } = await sync.readConflict();
+  block = true;
+  const apply = () => { applies += 1; return { step: 1 }; };
+  const first = sync.importConflict(token, apply);
+  const second = sync.importConflict(token, apply);
+  assert.equal(first, second);
+  while (!release) await tick();
+  assert.deepEqual({ ...await sync.readConflict() }, { status: 'busy' });
+  assert.equal(await sync.forceOverwrite(() => ({ step: 9 })), 'busy');
+  assert.equal(await sync.keepExternal(), 'busy');
+  assert.equal(await sync.connect(() => ({ step: 9 })), 'busy');
+  assert.equal(await sync.checkExternal(), 'busy');
+  const saving = sync.save({ step: 2 });
+  release();
+  assert.deepEqual({ ...await first }, { status: 'imported' });
+  assert.equal(await saving, false);
+  assert.equal(applies, 1);
+  assert.deepEqual(file.writes.slice(-2), ['STEP:1\n', 'STEP:2\n']);
+  assert.equal(file.bytes, 'STEP:2\n');
+});
+
+test('import queue 대기 중 save는 apply 전 값이므로 verified apply canonical이 우선한다', async () => {
+  let releaseRead;
+  let blockRead = false;
+  const file = detectableHandle('', { onText: async () => {
+    if (blockRead) { blockRead = false; await new Promise((resolve) => { releaseRead = resolve; }); }
+  } });
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('external');
+  await sync.checkExternal();
+  const { token } = await sync.readConflict();
+  blockRead = true;
+  const queuedRead = sync.readConflict();
+  while (!releaseRead) await tick();
+  const importing = sync.importConflict(token, () => ({ step: 2 }));
+  await sync.save({ step: 1 });
+  releaseRead();
+  await queuedRead;
+  assert.deepEqual({ ...await importing }, { status: 'imported' });
+  assert.equal(file.bytes, 'STEP:2\n');
+});
+
+test('apply의 reentrant save와 throw하는 handlers는 deadlock/rejection 없이 최신 snapshot을 쓴다', async () => {
+  const file = detectableHandle('');
+  const sync = loadSync({ picker: async () => file.handle });
+  sync.setStatusHandler(() => { throw new Error('status handler'); });
+  sync.setErrorHandler(() => { throw new Error('error handler'); });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('external');
+  await sync.checkExternal();
+  const { token } = await sync.readConflict();
+  let saving;
+  const result = await sync.importConflict(token, () => {
+    saving = sync.save({ step: 3 });
+    return { step: 2 };
+  });
+  assert.deepEqual({ ...result }, { status: 'imported' });
+  assert.equal(await saving, false);
+  assert.equal(file.bytes, 'STEP:3\n');
+  assert.equal(sync.getState().importing, false);
 });
 
 (async () => {

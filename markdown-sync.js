@@ -22,12 +22,19 @@
   let lastSavedAt = null;
   let failedRecord = null;
   let conflictRecord = null;
+  let conflictEpoch = 0;
+  let activeConflictEpoch = null;
   let generation = 0;
   let forcing = false;
   let forcePromise = null;
+  let importing = false;
+  let importPromise = null;
+  let importToken = null;
+  let importApply = null;
   let onError = () => {};
   let onStatus = () => {};
   const expectedBytes = new WeakMap();
+  const conflictTokens = new WeakMap();
 
   const safeName = (candidate) =>
     typeof candidate?.name === 'string' && candidate.name.trim()
@@ -36,6 +43,7 @@
   const wrapCheckFailure = (error) => Object.freeze({ marker: CHECK_FAILED, error });
   const isCheckFailure = (error) => error?.marker === CHECK_FAILED;
   const reportedError = (error) => isCheckFailure(error) ? error.error : error;
+  const statusResult = (status) => Object.freeze({ status });
 
   function hasConflict(target = handle) {
     return conflictRecord !== null && conflictRecord.handle === target;
@@ -52,7 +60,8 @@
       saveError: activeFailure?.kind === 'write',
       checkError: activeFailure?.kind === 'check',
       conflict: hasConflict(),
-      forcing
+      forcing,
+      importing
     });
   }
 
@@ -111,6 +120,7 @@
   function enterConflict(target, text, recordGeneration) {
     if (target !== handle) return;
     const first = !hasConflict(target);
+    if (first) activeConflictEpoch = ++conflictEpoch;
     conflictRecord = Object.freeze({ handle: target, text, generation: recordGeneration });
     failedRecord = null;
     if (first) publishState();
@@ -137,7 +147,7 @@
 
   async function connect(getSnapshot) {
     if (!isSupported()) return 'unsupported';
-    if (pendingConnection !== null || forcing) return 'busy';
+    if (pendingConnection !== null || forcing || importing) return 'busy';
 
     let resolveCompletion;
     const pending = {
@@ -194,6 +204,7 @@
           handle = candidate;
           failedRecord = null;
           conflictRecord = null;
+          activeConflictEpoch = null;
           publish('connected', safeName(candidate), savedAt);
           pending.finish(true);
           return 'connected';
@@ -294,7 +305,7 @@
 
   function checkExternal() {
     if (handle === null) return Promise.resolve('disconnected');
-    if (pendingConnection !== null || forcing) return Promise.resolve('busy');
+    if (pendingConnection !== null || forcing || importing) return Promise.resolve('busy');
     const checkedHandle = handle;
     if (typeof checkedHandle.getFile !== 'function' || !expectedBytes.has(checkedHandle)) {
       return Promise.resolve('unsupported');
@@ -324,11 +335,181 @@
     });
   }
 
+  function readConflict() {
+    if (handle === null) return Promise.resolve(statusResult('disconnected'));
+    if (!hasConflict()) return Promise.resolve(statusResult('not-conflict'));
+    if (pendingConnection !== null || forcing || importing) return Promise.resolve(statusResult('busy'));
+    const readHandle = handle;
+    if (typeof readHandle.getFile !== 'function') return Promise.resolve(statusResult('unsupported'));
+
+    return enqueueTask(async () => {
+      if (handle !== readHandle || !hasConflict(readHandle)) return statusResult('stale');
+      if (pendingConnection !== null || forcing || importing) return statusResult('busy');
+      const readEpoch = activeConflictEpoch;
+      try {
+        const text = await (await readHandle.getFile()).text();
+        if (
+          handle !== readHandle || !hasConflict(readHandle) ||
+          activeConflictEpoch !== readEpoch
+        ) return statusResult('stale');
+        const token = Object.freeze(Object.create(null));
+        conflictTokens.set(token, Object.freeze({ handle: readHandle, text, epoch: readEpoch }));
+        return Object.freeze({ status: 'ready', text, token });
+      } catch (error) {
+        report(error);
+        return statusResult('error');
+      }
+    }).then((result) => result, (error) => {
+      report(error);
+      return statusResult('error');
+    });
+  }
+
+  function isPlainSnapshot(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+      Object.prototype.toString.call(value) === '[object Object]';
+  }
+
+  function importConflict(token, apply) {
+    if (importPromise !== null) {
+      if (token === importToken && apply === importApply) return importPromise;
+      return Promise.resolve(statusResult('busy'));
+    }
+
+    const tokenRecord = token !== null && (typeof token === 'object' || typeof token === 'function')
+      ? conflictTokens.get(token)
+      : null;
+    if (tokenRecord === undefined || tokenRecord === null) return Promise.resolve(statusResult('stale'));
+    if (
+      handle !== tokenRecord.handle || !hasConflict(tokenRecord.handle) ||
+      activeConflictEpoch !== tokenRecord.epoch
+    ) {
+      conflictTokens.delete(token);
+      return Promise.resolve(statusResult('stale'));
+    }
+    if (pendingConnection !== null || forcing) return Promise.resolve(statusResult('busy'));
+
+    const target = tokenRecord.handle;
+    const targetEpoch = tokenRecord.epoch;
+    conflictTokens.delete(token);
+    importing = true;
+    importToken = token;
+    importApply = apply;
+    publishState();
+
+    const job = enqueueTask(async () => {
+      if (
+        handle !== target || !hasConflict(target) ||
+        activeConflictEpoch !== targetEpoch
+      ) return statusResult('stale');
+      if (typeof target.getFile !== 'function') return statusResult('unsupported');
+
+      let verifiedText;
+      try {
+        verifiedText = await (await target.getFile()).text();
+      } catch (error) {
+        report(error);
+        return statusResult('error');
+      }
+      if (
+        handle !== target || !hasConflict(target) ||
+        activeConflictEpoch !== targetEpoch
+      ) return statusResult('stale');
+      if (verifiedText !== tokenRecord.text) return statusResult('changed');
+
+      const generationBeforeApply = generation;
+      let snapshot;
+      try {
+        snapshot = apply(verifiedText);
+        if (snapshot !== null && (typeof snapshot === 'object' || typeof snapshot === 'function')) {
+          let then;
+          try {
+            then = snapshot.then;
+          } catch (error) {
+            report(error);
+            return statusResult('apply-error');
+          }
+          if (typeof then === 'function') return statusResult('apply-error');
+        }
+      } catch (error) {
+        report(error);
+        return statusResult('apply-error');
+      }
+      if (!isPlainSnapshot(snapshot)) return statusResult('apply-failed');
+
+      let rendered;
+      try {
+        rendered = MarkdownExport.render(snapshot);
+      } catch (error) {
+        if (
+          handle === target && hasConflict(target) &&
+          activeConflictEpoch === targetEpoch
+        ) {
+          conflictRecord = Object.freeze({ handle: target, text: null, generation: ++generation });
+        }
+        publishState();
+        report(error);
+        return statusResult('applied-render-error');
+      }
+
+      if (
+        handle !== target || !hasConflict(target) ||
+        activeConflictEpoch !== targetEpoch
+      ) return statusResult('stale');
+      if (generation === generationBeforeApply) {
+        conflictRecord = Object.freeze({ handle: target, text: rendered, generation: ++generation });
+      }
+
+      while (
+        handle === target && hasConflict(target) &&
+        activeConflictEpoch === targetEpoch
+      ) {
+        const record = conflictRecord;
+        if (record.text === null) return statusResult('applied-render-error');
+        let savedAt;
+        try {
+          // 명시적인 import 해결은 검증 직후의 최선형 write이며 CAS는 File API에 없다.
+          savedAt = await writeFile(target, record.text);
+        } catch (error) {
+          report(error);
+          return statusResult('applied-write-error');
+        }
+        if (
+          handle === target && conflictRecord === record &&
+          activeConflictEpoch === targetEpoch
+        ) {
+          conflictRecord = null;
+          activeConflictEpoch = null;
+          failedRecord = null;
+          const changed = publish(phase, fileName, savedAt);
+          if (!changed) publishState();
+          return statusResult('imported');
+        }
+      }
+      return statusResult('stale');
+    });
+
+    importPromise = job.then((result) => result, (error) => {
+      report(error);
+      return statusResult('error');
+    }).then((result) => {
+      importing = false;
+      importPromise = null;
+      importToken = null;
+      importApply = null;
+      publishState();
+      return result;
+    });
+    return importPromise;
+  }
+
   function forceOverwrite(getSnapshot) {
+    if (importing) return Promise.resolve('busy');
     if (forcePromise !== null) return forcePromise;
     if (handle === null || !hasConflict()) return Promise.resolve(false);
 
     const forceHandle = handle;
+    const forceEpoch = activeConflictEpoch;
     const forceGeneration = ++generation;
     let text;
     try {
@@ -345,7 +526,10 @@
     publishState();
 
     const job = enqueueTask(async () => {
-      while (handle === forceHandle && hasConflict(forceHandle)) {
+      while (
+        handle === forceHandle && hasConflict(forceHandle) &&
+        activeConflictEpoch === forceEpoch
+      ) {
         const record = conflictRecord;
         if (record.text === null) return false;
         let savedAt;
@@ -356,8 +540,12 @@
           report(error);
           return false;
         }
-        if (handle === forceHandle && conflictRecord === record) {
+        if (
+          handle === forceHandle && conflictRecord === record &&
+          activeConflictEpoch === forceEpoch
+        ) {
           conflictRecord = null;
+          activeConflictEpoch = null;
           failedRecord = null;
           const changed = publish(phase, fileName, savedAt);
           if (!changed) publishState();
@@ -378,11 +566,12 @@
 
   function keepExternal() {
     if (handle === null || !hasConflict()) return Promise.resolve(false);
-    if (forcing || pendingConnection !== null) return Promise.resolve('busy');
+    if (forcing || importing || pendingConnection !== null) return Promise.resolve('busy');
     generation += 1;
     handle = null;
     failedRecord = null;
     conflictRecord = null;
+    activeConflictEpoch = null;
     publish('disconnected', null, null);
     return Promise.resolve('disconnected');
   }
@@ -400,6 +589,8 @@
     connect,
     save,
     checkExternal,
+    readConflict,
+    importConflict,
     forceOverwrite,
     keepExternal,
     isSupported,
