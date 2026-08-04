@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v3.3 (2026-08-04) — JSON 파일 연결 상태와 마지막 성공 저장 시각 2단계 |
+| 문서 버전 | v3.4 (2026-08-04) — Obsidian Markdown 단방향 자동 생성 4단계 |
 | 제품 코드명 | `daily-todo` (화면에 보이는 이름은 **My What Todo**) |
 | 한 줄 요약 | 해야 할 일을 실행 단위로 쪼개 2단계로 관리하고, 우선순위·태그로 추려 보며 완료율을 확인하는 1인용 웹 앱 |
 | 대상 사용자 | 본인 1명 (단일 기기, 단일 브라우저) |
@@ -587,8 +587,25 @@ checkbox.indeterminate = !item.completed && children.some(c => c.completed);
 - [ ] 취소하거나 후보 쓰기에 실패한 재연결은 기존 파일명과 마지막 성공 저장 시각으로 복귀한다
 - [ ] 연결 중에는 연결 버튼을 비활성화하고, 성공 뒤 문구를 `파일 다시 연결`로 바꾼다
 
-수동 재시도 UI, 파일 핸들 영속화, Markdown 생성·파싱, 외부 파일 변경 감지는 2단계 범위가
-아니다. 기존 내보내기/가져오기와 LocalStorage 저장은 계속 독립적으로 동작한다.
+JSON 연결의 파일 핸들 영속화와 외부 파일 변경 감지는 범위가 아니다. 기존
+내보내기/가져오기와 LocalStorage 저장은 계속 독립적으로 동작한다.
+
+**Obsidian Markdown 자동 생성 (4단계)**
+
+- [ ] `Markdown 연결`은 `showSaveFilePicker`로 `my-what-todo.md`와 `.md` 필터를 제안한다
+- [ ] 사용자가 Obsidian vault 안에서 고른 파일에 현재 `Store.exportData()`를 즉시 쓰고,
+      연결 뒤의 성공한 Store 변경을 한 쓰기 큐에서 순서대로 덮어쓴다
+- [ ] 파일 핸들은 현재 페이지 세션에서만 유지한다. 새로고침하거나 페이지를 닫으면 다시 골라야 한다
+- [ ] 출력 bytes는 다음 형식을 고정한다: `title`·`generated_by`·`format_version` YAML
+      frontmatter, `# My What Todo`, 읽기 전용 경고, 카테고리 순서의 `##` 절,
+      `- [ ] (P0) 제목 #태그 <!-- my-what-todo:id=... -->` 항목과 2칸 들여쓴 하위 항목,
+      그리고 파일 끝 newline 하나
+- [ ] 형제는 `order` → `createdAt` → `id` 순으로 정렬하고, 같은 snapshot은 언제나 같은
+      bytes를 만든다. 제목·태그·카테고리는 HTML/Markdown으로 실행되지 않게 escape한다
+- [ ] Markdown은 **앱이 정본인 단방향 읽기 전용 보기**다. Markdown 파일의 직접 편집을
+      읽거나 앱에 반영하는 파서, 양방향 동기화, 외부 변경 감지는 명시적으로 제외한다
+- [ ] render/write 실패는 LocalStorage 정본과 JSON mirror를 막지 않으며, 실패한 새 연결은
+      오래된 후보를 활성화하지 않는다. 기존 연결이 있으면 그 핸들과 마지막 성공 상태를 보존한다
 
 ### F-19. 정렬 옵션
 

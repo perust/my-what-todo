@@ -49,6 +49,8 @@
   const fileConnectButton = document.getElementById('file-connect');
   const fileStatus = document.getElementById('file-status');
   const fileRetryButton = document.getElementById('file-retry');
+  const markdownConnectButton = document.getElementById('markdown-connect');
+  const markdownStatus = document.getElementById('markdown-status');
   const importFile = document.getElementById('import-file');
   const importDialog = document.getElementById('import-dialog');
   const importDialogText = document.getElementById('import-dialog-text');
@@ -161,13 +163,27 @@
     });
   }
 
+  /** 두 mirror는 서로 독립이다. 한쪽의 동기 예외나 Promise rejection이 다른 쪽을 막지 않는다. */
+  function syncMirrors(snapshot) {
+    try {
+      Promise.resolve(FileSync.save(snapshot)).catch(() => {});
+    } catch (ignored) {
+      // mirror 실패는 LocalStorage 정본이나 다른 mirror를 되돌리지 않는다.
+    }
+    try {
+      Promise.resolve(MarkdownSync.save(snapshot)).catch(() => {});
+    } catch (ignored) {
+      // 위와 같은 독립 경계다.
+    }
+  }
+
   /**
    * Store가 null을 주면 저장에 실패해 변경이 통째로 되돌아간 것이다 (PRD §8).
    * 값 검증은 호출 전에 끝내두었으므로, 여기 도달한 null은 저장 실패뿐이다.
    */
   function saved(result) {
     if (result !== null) {
-      FileSync.save(Store.exportData());
+      syncMirrors(Store.exportData());
       return result;
     }
 
@@ -185,7 +201,7 @@
    * 다른 탭의 변경을 받아들인다.
    * 편집·하위 입력·되돌리기는 이제 없는 항목을 가리킬 수 있으므로 먼저 접는다.
    */
-  function adoptExternal() {
+  function adoptExternal({ alreadyLoaded = false } = {}) {
     editingId = null;
     childDraftFor = null;
     childDraftText = '';
@@ -202,7 +218,10 @@
     if (importDialog.open) importDialog.close();
     pendingImport = null;
 
-    Store.load();
+    if (!alreadyLoaded) {
+      Store.load();
+      syncMirrors(Store.exportData());
+    }
     renderTheme();
 
     // 뽀모도로 설정도 함께 갈렸다. 입력 칸을 되맞추지 않으면 저장본에는 50분이
@@ -223,6 +242,7 @@
   /** 보이지 않는 탭에서는 읽기만 한다. rev를 최신으로 들고 있어야 다음 저장의 경합 검사가 산다. */
   function adoptQuietly() {
     Store.load();
+    syncMirrors(Store.exportData());
     adoptDeferred = true;
   }
 
@@ -1803,7 +1823,7 @@
     // 되살아난 것을 확인한 뒤에 토스트를 거둔다. 먼저 거두면 저장에 실패했을 때
     // 다시 누를 곳이 사라져 지운 항목이 영영 돌아오지 않는다.
     if (Store.restore(items) !== null) {
-      FileSync.save(Store.exportData());
+      syncMirrors(Store.exportData());
       // 이 삭제가 부른 알림만 버린다. 되살렸으니 틀린 말이 되기 때문이다 —
       // "태그가 없어졌다"고 알리는 사이에 그 태그는 돌아와 있다. 그 사이에 사용자가
       // 다른 버튼을 눌러 생긴 알림은 여전히 맞는 말이므로 그대로 둔다.
@@ -2041,7 +2061,7 @@
     // 숨어 있는 동안 읽어만 두고 미뤄둔 변경이 있으면 이제 화면에 옮긴다.
     if (adoptDeferred) {
       adoptDeferred = false;
-      adoptExternal();
+      adoptExternal({ alreadyLoaded: true });
     }
   });
 
@@ -2140,6 +2160,32 @@
   });
   FileSync.setStatusHandler(renderFileStatus);
 
+  function renderMarkdownStatus(state, formatter = formatSavedTime) {
+    let text = 'Markdown 연결 안 됨';
+    if (state.phase === 'connecting') {
+      text = 'Markdown 연결 중…';
+    } else if (state.phase === 'connected') {
+      const saved = state.lastSavedAt === null
+        ? '아직 성공 기록 없음'
+        : `${state.saveError ? '마지막 성공' : '마지막 저장'} ${formatter(state.lastSavedAt)}`;
+      text = state.saveError
+        ? `Markdown 저장 실패 · ${saved}`
+        : `${state.fileName} Markdown 연결됨 · ${saved}`;
+    }
+
+    setText(markdownStatus, text);
+    markdownConnectButton.disabled = state.phase === 'connecting';
+    setText(
+      markdownConnectButton,
+      state.phase === 'connected' ? 'Markdown 다시 연결' : 'Markdown 연결'
+    );
+  }
+
+  MarkdownSync.setErrorHandler(() => {
+    showNotice('Markdown 파일에 저장하지 못했습니다. 브라우저와 JSON 저장 내용은 그대로 유지됩니다.');
+  });
+  MarkdownSync.setStatusHandler(renderMarkdownStatus);
+
   fileRetryButton.addEventListener('click', async () => {
     const success = await FileSync.retry();
     showNotice(success
@@ -2155,6 +2201,18 @@
 
     const result = await FileSync.connect(() => Store.exportData());
     if (result === 'connected') showNotice('파일을 연결했습니다. 이후 변경을 이 파일에 자동 저장합니다.');
+  });
+
+  markdownConnectButton.addEventListener('click', async () => {
+    if (!MarkdownSync.isSupported()) {
+      showNotice('이 브라우저는 Markdown 연결을 지원하지 않습니다. JSON 내보내기를 이용해 주세요.');
+      return;
+    }
+
+    const result = await MarkdownSync.connect(() => Store.exportData());
+    if (result === 'connected') {
+      showNotice('Markdown을 연결했습니다. 앱 변경을 읽기 전용 보기로 자동 저장합니다.');
+    }
   });
 
   /** 외부에 아무것도 보내지 않는다. Blob을 만들어 브라우저가 저장하게 한다. */
