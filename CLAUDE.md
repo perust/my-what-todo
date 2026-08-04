@@ -1,6 +1,6 @@
 # daily-todo
 
-개인용 계층형 할 일 관리 웹 앱. 화면에 보이는 이름은 **My Task**.
+개인용 계층형 할 일 관리 웹 앱. 화면에 보이는 이름은 **My What Todo**.
 상세 명세는 `docs/todo-app-prd.md`, 단계별 작업 지시는 `docs/claude-code-prompts.md`.
 
 ## 절대 제약

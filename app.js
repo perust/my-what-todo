@@ -2012,7 +2012,7 @@
   };
 
   exportButton.addEventListener('click', () => {
-    download(Store.exportData(), `my-task-${stamp()}.json`);
+    download(Store.exportData(), `my-what-todo-${stamp()}.json`);
     // 브라우저에 넘기는 것까지가 우리 몫이다. 실제로 저장됐는지는 알 수 없으므로
     // 저장됐다고 단정하지 않는다.
     showNotice('내려받기를 시작했습니다. 파일이 없으면 브라우저의 다운로드 목록을 확인해 주세요.');
@@ -2059,7 +2059,7 @@
       pendingImport = null;
       return;
     }
-    if (choice === 'backup') download(Store.exportData(), `my-task-backup-${stamp()}.json`);
+    if (choice === 'backup') download(Store.exportData(), `my-what-todo-backup-${stamp()}.json`);
 
     const result = saved(Store.importData(pendingImport));
     pendingImport = null;
