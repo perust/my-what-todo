@@ -50,6 +50,7 @@
   const importDialog = document.getElementById('import-dialog');
   const importDialogText = document.getElementById('import-dialog-text');
   const helpButton = document.getElementById('help-button');
+  const loginButton = document.getElementById('login-button');
   const helpDialog = document.getElementById('help-dialog');
   const pomoButton = document.getElementById('pomo-button');
   const pomoPanel = document.getElementById('pomodoro');
@@ -99,6 +100,11 @@
   let pendingUndo = null;
   let undoTimer = null;
   let queuedNotice = null;
+  /**
+   * 미뤄둔 알림이 **이 삭제 때문에 생긴 것**인가. 되살리면 그런 알림은 틀린 말이 되지만,
+   * 그 사이에 사용자가 다른 버튼을 눌러 생긴 알림은 여전히 맞는 말이라 버리면 안 된다.
+   */
+  let queuedNoticeFromDelete = false;
 
   /** 삭제 확인을 기다리는 카테고리 id. 항목이 남아 있으면 옮겨갈 곳을 물어야 한다. */
   let pendingCategoryRemove = null;
@@ -1275,7 +1281,8 @@
       filter.type === 'tag' &&
       Store.getRoots({ type: 'tag', value: filter.value }).length === 0
     ) {
-      showNotice(`#${filter.value} 태그가 없어져 전체 목록으로 돌아왔습니다.`);
+      // 되살리면 이 말은 틀린 것이 되므로 "삭제 때문"이라고 표시해 함께 버려지게 한다.
+      showNotice(`#${filter.value} 태그가 없어져 전체 목록으로 돌아왔습니다.`, true);
       filter = { type: 'all', query: filter.query };
     }
     // 필터 중인 카테고리를 지웠을 때도 마찬가지다.
@@ -1285,7 +1292,8 @@
       showNotice(
         gone
           ? `${gone} 카테고리가 없어져 전체 목록으로 돌아왔습니다.`
-          : '고른 카테고리가 없어져 전체 목록으로 돌아왔습니다.'
+          : '고른 카테고리가 없어져 전체 목록으로 돌아왔습니다.',
+        true
       );
       filter = { type: 'all', query: filter.query };
     }
@@ -1634,6 +1642,7 @@
     if (queuedNotice !== null) {
       const text = queuedNotice;
       queuedNotice = null;
+      queuedNoticeFromDelete = false;
       showNotice(text);
     }
   }
@@ -1646,9 +1655,10 @@
    * 알림은 뒤에 다시 뜨지만, 지운 항목은 그 5초가 지나면 영영 되살릴 수 없다.
    * 미뤄둔 알림은 하나만 들고 있는다 — 밀린 것을 줄줄이 띄우는 편이 더 나쁘다.
    */
-  function showNotice(text) {
+  function showNotice(text, fromDelete) {
     if (pendingUndo !== null) {
       queuedNotice = text;
+      queuedNoticeFromDelete = fromDelete === true;
       return;
     }
 
@@ -1703,9 +1713,13 @@
     // 되살아난 것을 확인한 뒤에 토스트를 거둔다. 먼저 거두면 저장에 실패했을 때
     // 다시 누를 곳이 사라져 지운 항목이 영영 돌아오지 않는다.
     if (Store.restore(items) !== null) {
-      // 미뤄둔 알림은 이 삭제가 부른 결과를 설명하던 것이다. 되살렸으니 이제
-      // 틀린 말이 된다 — "태그가 없어졌다"고 알리는 사이에 그 태그는 돌아와 있다.
-      queuedNotice = null;
+      // 이 삭제가 부른 알림만 버린다. 되살렸으니 틀린 말이 되기 때문이다 —
+      // "태그가 없어졌다"고 알리는 사이에 그 태그는 돌아와 있다. 그 사이에 사용자가
+      // 다른 버튼을 눌러 생긴 알림은 여전히 맞는 말이므로 그대로 둔다.
+      if (queuedNoticeFromDelete) {
+        queuedNotice = null;
+        queuedNoticeFromDelete = false;
+      }
 
       // parentId와 order를 그대로 되살리므로 트리째 돌아온다
       hideUndo();
@@ -1807,6 +1821,15 @@
 
   helpButton.addEventListener('click', () => {
     if (!helpDialog.open) helpDialog.showModal();
+  });
+
+  /**
+   * 로그인할 대상이 아직 없다. 자리만 먼저 잡아둔 버튼이라, 누른 사람에게
+   * **지금 데이터가 어디 있는지**까지 함께 알린다. "준비 중"만 말하면
+   * 그동안 내 할 일이 어딘가 서버에 있는 줄 알 수 있다.
+   */
+  loginButton.addEventListener('click', () => {
+    showNotice('로그인은 아직 준비 중입니다. 지금은 할 일이 이 브라우저에만 저장됩니다.');
   });
 
   for (const dialog of [helpDialog, clearDialog, importDialog]) closeOnOutsideClick(dialog);

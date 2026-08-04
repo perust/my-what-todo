@@ -121,6 +121,29 @@ body {
   margin-top: 10px;
 }
 
+/* 이 줄은 오른쪽 정렬이다. 왼쪽 끝에 세우려고 이 버튼이 남은 자리를 밀어낸다.
+   남은 할 일 배지 쪽에 여백을 걸면 그 배지가 숨을 때(0개) 나머지가 딸려 온다. */
+.login-button {
+  flex: none;
+  margin-right: auto;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.login-button:hover {
+  border-color: var(--text-dim);
+  color: var(--text);
+}
+
 .header-title {
   margin: 0;
   white-space: nowrap;

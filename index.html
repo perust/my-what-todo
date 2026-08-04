@@ -66,6 +66,11 @@
       </div>
 
       <div class="header-tools">
+        <!-- 아직 로그인할 대상이 없다. 나중에 붙일 자리를 먼저 잡아둔 것이고,
+             지금 누르면 무엇이 준비 중인지 알린다. 자리만 비워두면 그 사이에
+             다른 것이 들어와 나중에 옮기게 된다. -->
+        <button type="button" id="login-button" class="login-button">로그인</button>
+
         <span id="remaining-badge" class="remaining" aria-live="polite"></span>
 
         <button type="button" id="pomo-button" class="pomo-button"
@@ -346,6 +351,8 @@
         <dl class="help-list">
           <dt>저장 위치</dt>
           <dd>모든 데이터는 이 브라우저에만 저장됩니다. 외부로 전송되지 않습니다.</dd>
+          <dt>로그인</dt>
+          <dd>제목 아래의 로그인은 아직 준비 중입니다. 지금은 다른 기기로 이어지지 않으니, 옮기려면 아래의 내보내기와 가져오기를 쓰시면 됩니다.</dd>
           <dt>내보내기 · 가져오기</dt>
           <dd>목록 아래 버튼으로 JSON 파일을 저장하거나 불러올 수 있습니다. 가져오기는 되돌릴 수 없으므로 백업을 먼저 하시는 것을 권합니다.</dd>
         </dl>
