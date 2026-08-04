@@ -97,12 +97,15 @@
           <div class="pomo-controls">
             <button type="button" id="pomo-toggle" class="pomo-run">시작</button>
             <button type="button" id="pomo-reset" class="pomo-reset">초기화</button>
-            <button type="button" id="pomo-expand" class="pomo-icon"
+            <button type="button" id="pomo-expand" class="pomo-icon pomo-icon-wide"
                     aria-label="시계 펼치기" aria-expanded="false" aria-controls="pomo-dial">
               <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
                 <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                       stroke-linejoin="round" d="m6 9 6 6 6-6"/>
               </svg>
+              <!-- 글자는 app.js가 상태에 맞춰 갈아 끼운다. aria-label도 같은 자리에서
+                   함께 고쳐 눈에 보이는 말과 읽히는 말이 갈라지지 않게 한다. -->
+              <span id="pomo-expand-label">펼치기</span>
             </button>
             <button type="button" id="pomo-settings-button" class="pomo-icon"
                     aria-label="뽀모도로 설정" aria-expanded="false" aria-controls="pomo-settings">

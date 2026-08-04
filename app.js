@@ -63,6 +63,7 @@
   const pomoPhase = document.getElementById('pomo-phase');
   const pomoCycleButton = document.getElementById('pomo-cycle');
   const pomoExpand = document.getElementById('pomo-expand');
+  const pomoExpandLabel = document.getElementById('pomo-expand-label');
   const pomoDial = document.getElementById('pomo-dial');
   const pomoDialFill = document.getElementById('pomo-dial-fill');
   const pomoDialTime = document.getElementById('pomo-dial-time');
@@ -701,7 +702,12 @@
 
     // 라벨은 여는 자리에서만 고치면 안 된다. Esc로 닫는 길이 따로 있어
     // 거기서 "시계 접기"에 멈춘 채 남는다. 상태를 바꾸는 곳에서 늘 함께 고친다.
+    //
+    // 눈에 보이는 글자와 읽히는 이름을 한 자리에서 같이 고친다. 따로 두면 한쪽만
+    // 고치는 실수가 나고, 그때 음성으로 조작하는 사람은 화면에 없는 말을 불러야 한다.
+    // aria-label이 보이는 글자를 그대로 품고 있어야 한다 (WCAG "Label in Name").
     if (button === pomoExpand) {
+      setText(pomoExpandLabel, next ? '접기' : '펼치기');
       button.setAttribute('aria-label', next ? '시계 접기' : '시계 펼치기');
     }
   }

@@ -500,6 +500,18 @@ body {
   color: var(--focus);
 }
 
+/* 글자가 함께 들어가는 아이콘 버튼. 정사각형 크기를 풀고 좌우 여백만 준다.
+   설정(톱니)은 그대로 아이콘만 쓰므로 .pomo-icon 쪽은 건드리지 않는다. */
+.pomo-icon-wide {
+  width: auto;
+  gap: 4px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 /* 펼치기 화살표는 열리면 뒤집는다 */
 #pomo-expand.is-active svg {
   transform: rotate(180deg);
