@@ -2016,6 +2016,10 @@ button.badge:hover {
     flex-wrap: wrap;
   }
 
+  .markdown-import-actions {
+    flex-wrap: wrap;
+  }
+
   .conflict-actions {
     flex-direction: column;
     align-items: stretch;

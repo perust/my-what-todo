@@ -58,7 +58,7 @@ format_version: 1
 
 # My What Todo
 
-> My What Todo 앱에서 자동 생성한 읽기 전용 보기입니다. 앱에서 변경하면 이 파일을 덮어씁니다.
+> My What Todo 앱에서 자동 생성한 보기입니다. 지원되는 기존 할 일 편집은 앱의 Markdown 충돌 해결에서 가져올 수 있습니다.
 
 ## 업무
 - [ ] (P0) 제목 #tag #둘 <!-- my-what-todo:id=root%20id%2F%ED%95%9C%EA%B8%80 -->

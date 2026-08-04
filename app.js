@@ -55,6 +55,8 @@
   const markdownStatus = document.getElementById('markdown-status');
   const markdownConflictResolveButton = document.getElementById('markdown-conflict-resolve');
   const markdownConflictDialog = document.getElementById('markdown-conflict-dialog');
+  const markdownImportDialog = document.getElementById('markdown-import-dialog');
+  const markdownImportDialogText = document.getElementById('markdown-import-dialog-text');
   const importFile = document.getElementById('import-file');
   const importDialog = document.getElementById('import-dialog');
   const importDialogText = document.getElementById('import-dialog-text');
@@ -124,6 +126,9 @@
 
   /** 파일이 정해진 뒤, 덮어쓰기 전에 백업 여부를 묻는 동안 들고 있는 내용. */
   let pendingImport = null;
+  /** Markdown 원문·parse 결과는 preview 뒤 보관하지 않는다. 재검증에 필요한 값만 둔다. */
+  let pendingMarkdownImport = null;
+  let markdownImportPreparing = false;
 
   /** 끌고 있는 항목의 id. 직접 순서 모드에서만 값이 찬다. */
   let draggingId = null;
@@ -167,13 +172,18 @@
     });
   }
 
-  /** 두 mirror는 서로 독립이다. 한쪽의 동기 예외나 Promise rejection이 다른 쪽을 막지 않는다. */
-  function syncMirrors(snapshot) {
+  /** JSON mirror 하나만 독립적으로 best-effort 저장한다. */
+  function syncJsonMirror(snapshot) {
     try {
       Promise.resolve(FileSync.save(snapshot)).catch(() => {});
     } catch (ignored) {
-      // mirror 실패는 LocalStorage 정본이나 다른 mirror를 되돌리지 않는다.
+      // mirror 실패는 LocalStorage 정본을 되돌리지 않는다.
     }
+  }
+
+  /** 두 mirror는 서로 독립이다. 한쪽의 동기 예외나 Promise rejection이 다른 쪽을 막지 않는다. */
+  function syncMirrors(snapshot) {
+    syncJsonMirror(snapshot);
     try {
       Promise.resolve(MarkdownSync.save(snapshot)).catch(() => {});
     } catch (ignored) {
@@ -201,6 +211,18 @@
     return null;
   }
 
+  /** 가져오기 성공 뒤 현재 상태 전체가 바뀌었음을 UI 전반에 반영한다. */
+  function finishImportedState() {
+    cancelUndo();
+    filter = { type: 'all', query: '' };
+    searchInput.value = '';
+    searchClear.hidden = true;
+    renderTheme();
+    syncPomoSettings(true);
+    renderPomo();
+    render();
+  }
+
   /**
    * 다른 탭의 변경을 받아들인다.
    * 편집·하위 입력·되돌리기는 이제 없는 항목을 가리킬 수 있으므로 먼저 접는다.
@@ -220,7 +242,9 @@
     // 새 상태를 지우지 않도록 두 확인창을 모두 접는다.
     if (clearDialog.open) clearDialog.close();
     if (importDialog.open) importDialog.close();
+    if (markdownImportDialog.open) markdownImportDialog.close();
     pendingImport = null;
+    pendingMarkdownImport = null;
 
     if (!alreadyLoaded) {
       Store.load();
@@ -1951,7 +1975,8 @@
   });
 
   for (const dialog of [
-    helpDialog, loginDialog, clearDialog, importDialog, fileConflictDialog, markdownConflictDialog
+    helpDialog, loginDialog, clearDialog, importDialog, fileConflictDialog, markdownConflictDialog,
+    markdownImportDialog
   ]) {
     closeOnOutsideClick(dialog);
   }
@@ -2202,7 +2227,9 @@
 
   function renderMarkdownStatus(state, formatter = formatSavedTime) {
     let text = 'Markdown 연결 안 됨';
-    if (state.phase === 'connecting') {
+    if (state.importing) {
+      text = 'Markdown 편집 가져오는 중…';
+    } else if (state.phase === 'connecting') {
       text = 'Markdown 연결 중…';
     } else if (state.phase === 'connected') {
       const saved = state.lastSavedAt === null
@@ -2220,14 +2247,18 @@
     }
 
     setText(markdownStatus, text);
-    markdownConnectButton.disabled = state.phase === 'connecting' || !!state.forcing;
+    markdownConnectButton.disabled = state.phase === 'connecting' || !!state.forcing || !!state.importing;
     setText(
       markdownConnectButton,
       state.phase === 'connected' ? 'Markdown 다시 연결' : 'Markdown 연결'
     );
     markdownConflictResolveButton.hidden = !(state.phase === 'connected' && state.conflict);
-    markdownConflictResolveButton.disabled = !!state.forcing;
-    setText(markdownConflictResolveButton, state.forcing ? '해결 중…' : 'Markdown 충돌 해결');
+    markdownConflictResolveButton.disabled = !!state.forcing || !!state.importing;
+    setText(markdownConflictResolveButton,
+      state.importing ? '가져오는 중…' : state.forcing ? '해결 중…' : 'Markdown 충돌 해결');
+    if (!state.conflict && !state.importing && markdownImportDialog.open) {
+      markdownImportDialog.close();
+    }
   }
 
   MarkdownSync.setErrorHandler(() => {
@@ -2290,12 +2321,161 @@
     if (!markdownConflictDialog.open) markdownConflictDialog.showModal();
   });
 
+  const MARKDOWN_IMPORT_FORMAT_NOTICE =
+    'Markdown 편집을 가져올 수 없습니다. 앱에서 생성한 형식과 지원 범위를 확인해 주세요.';
+
+  function formatMarkdownImportSummary(summary) {
+    return `전체 ${summary.total}개 · 변경 ${summary.changed}개 · ` +
+      `완료 ${summary.completedChanged} · 우선순위 ${summary.priorityChanged} · ` +
+      `제목 ${summary.titleChanged} · 태그 ${summary.tagsChanged} · ` +
+      `카테고리 ${summary.categoryChanged} · 재배치 ${summary.reparented} · 순서 ${summary.reordered}`;
+  }
+
+  function markdownImportStatusNotice(status) {
+    if (status === 'busy') return 'Markdown 파일 작업이 진행 중입니다. 끝난 뒤 다시 선택해 주세요.';
+    if (status === 'changed' || status === 'stale') {
+      return 'Markdown 파일이 다시 바뀌었습니다. 충돌 해결을 다시 열어 주세요.';
+    }
+    if (status === 'unsupported') return '이 브라우저는 Markdown 편집 가져오기를 지원하지 않습니다.';
+    if (status === 'disconnected' || status === 'not-conflict') {
+      return '가져올 Markdown 충돌이 없습니다. 연결 상태를 확인해 주세요.';
+    }
+    return 'Markdown 편집을 가져오지 못했습니다. 충돌은 그대로 유지됩니다.';
+  }
+
+  async function prepareMarkdownImport() {
+    if (markdownImportPreparing || pendingMarkdownImport || markdownImportDialog.open) return;
+    markdownImportPreparing = true;
+    const current = Store.exportData();
+    const baseline = JSON.stringify(current);
+    let read;
+    try {
+      read = await MarkdownSync.readConflict();
+    } catch (ignored) {
+      markdownImportPreparing = false;
+      showNotice(markdownImportStatusNotice('error'));
+      return;
+    }
+    if (!read || read.status !== 'ready') {
+      markdownImportPreparing = false;
+      showNotice(markdownImportStatusNotice(read?.status));
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = MarkdownImport.parse(read.text, current);
+    } catch (ignored) {
+      markdownImportPreparing = false;
+      showNotice(MARKDOWN_IMPORT_FORMAT_NOTICE);
+      return;
+    }
+    if (parsed.summary.changed === 0) {
+      markdownImportPreparing = false;
+      showNotice('가져올 Markdown 편집이 없습니다.');
+      return;
+    }
+
+    // 원문과 parsed.data는 여기서 버린다. confirm은 core가 재검증한 text를 다시 parse한다.
+    pendingMarkdownImport = {
+      token: read.token, current, baseline, summary: parsed.summary
+    };
+    markdownImportPreparing = false;
+    markdownImportDialogText.textContent = formatMarkdownImportSummary(parsed.summary);
+    if (!markdownImportDialog.open) markdownImportDialog.showModal();
+  }
+
+  async function confirmMarkdownImport() {
+    const pending = pendingMarkdownImport;
+    if (!pending) return;
+    pendingMarkdownImport = null;
+    if (markdownImportDialog.open) markdownImportDialog.close();
+
+    let applyReason = null;
+    let appliedResult = null;
+    let snapshot = null;
+    let result;
+    try {
+      result = await MarkdownSync.importConflict(pending.token, (verifiedText) => {
+        if (JSON.stringify(Store.exportData()) !== pending.baseline) {
+          applyReason = 'app-changed';
+          return null;
+        }
+        let parsed;
+        try {
+          parsed = MarkdownImport.parse(verifiedText, pending.current);
+        } catch (ignored) {
+          applyReason = 'invalid';
+          return null;
+        }
+        if (JSON.stringify(parsed.summary) !== JSON.stringify(pending.summary)) {
+          applyReason = 'invalid';
+          return null;
+        }
+        appliedResult = Store.importData(parsed.data);
+        if (appliedResult === null) {
+          applyReason = 'store-save';
+          return null;
+        }
+        snapshot = Store.exportData();
+        return snapshot;
+      });
+    } catch (ignored) {
+      // Core는 원칙상 reject하지 않지만, 이미 Store 적용 callback을 실행한 뒤의 예외라도
+      // 화면과 JSON mirror를 옛 상태에 남기지 않도록 아래의 적용 완료 경계에서 처리한다.
+      result = { status: 'error' };
+    }
+
+    if (appliedResult !== null && snapshot !== null) {
+      // Markdown core가 이미 candidate를 write/보존했다. 여기서는 JSON mirror만 따로 갱신한다.
+      // 이후 core가 예상 밖 상태나 rejection을 돌려도 LocalStorage 적용은 되돌릴 수 없다.
+      syncJsonMirror(snapshot);
+      finishImportedState();
+      if (result?.status === 'imported') {
+        showNotice(`${pending.summary.changed}개 항목의 Markdown 편집을 가져왔습니다.`);
+      } else {
+        showNotice('Markdown 편집을 브라우저 저장에는 적용했지만 Markdown 정본 저장에 실패했습니다. 충돌은 유지됩니다.');
+      }
+      return;
+    }
+
+    if (applyReason === 'app-changed') {
+      showNotice('미리보기 뒤 앱 내용이 바뀌었습니다. 충돌 해결을 다시 열어 주세요.');
+    } else if (applyReason === 'invalid') {
+      showNotice(MARKDOWN_IMPORT_FORMAT_NOTICE);
+    } else if (applyReason === 'store-save') {
+      showNotice('브라우저 저장소에 저장하지 못했습니다. Markdown 충돌은 그대로 유지됩니다.');
+    } else {
+      showNotice(markdownImportStatusNotice(result?.status));
+    }
+  }
+
+  markdownImportDialog.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-choice]');
+    if (!button) return;
+    if (button.dataset.choice === 'confirm') {
+      // rejection은 함수 내부에서 모두 고정 문구로 흡수한다.
+      confirmMarkdownImport();
+    } else {
+      markdownImportDialog.close();
+    }
+  });
+
+  markdownImportDialog.addEventListener('close', () => {
+    pendingMarkdownImport = null;
+  });
+
   markdownConflictDialog.addEventListener('click', async (event) => {
     const button = event.target.closest('[data-choice]');
     if (!button) return;
     const choice = button.dataset.choice;
     markdownConflictDialog.close();
     if (choice === 'cancel') return;
+
+    if (choice === 'import') {
+      await prepareMarkdownImport();
+      return;
+    }
 
     if (choice === 'force') {
       let success = false;
@@ -2345,7 +2525,7 @@
 
     const result = await MarkdownSync.connect(() => Store.exportData());
     if (result === 'connected') {
-      showNotice('Markdown을 연결했습니다. 앱 변경을 읽기 전용 보기로 자동 저장합니다.');
+      showNotice('Markdown을 연결했습니다. 앱 변경을 결정론적 보기로 자동 저장합니다.');
     }
   });
 
@@ -2425,21 +2605,7 @@
     pendingImport = null;
     if (!result) return;
 
-    // 가져오기는 현재 상태를 통째로 바꾼다. 이전 데이터에서 지운 항목을 새 데이터에
-    // 섞어 되살릴 수 없도록 성공을 확인한 뒤 undo와 그에 딸린 대기 알림을 버린다.
-    cancelUndo();
-
-    // 가져온 데이터에는 예전 필터가 가리키던 것이 없을 수 있다
-    filter = { type: 'all', query: '' };
-    searchInput.value = '';
-    searchClear.hidden = true;
-
-    renderTheme();
-    // 뽀모도로 회차 설정도 파일 것으로 갈렸다. 입력 칸을 되맞추지 않으면
-    // 화면에는 옛 숫자가 남고 실제로 도는 길이만 달라진다.
-    syncPomoSettings(true);
-    renderPomo();
-    render();
+    finishImportedState();
     showNotice(`${result.todos}개를 가져왔습니다.`);
   });
 

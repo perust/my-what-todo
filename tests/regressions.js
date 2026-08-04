@@ -513,6 +513,8 @@ function loadApp(options = {}) {
   let markdownForceCalls = 0;
   let markdownKeepExternalCalls = 0;
   let markdownCheckExternalCalls = 0;
+  let markdownReadConflictCalls = 0;
+  let markdownImportConflictCalls = 0;
   let loadCount = 0;
   let importCount = 0;
   const categories = [{ id: 'work', name: '업무', hue: 220 }];
@@ -535,7 +537,11 @@ function loadApp(options = {}) {
     getStats() { return { done: 0, total: 0, percent: 0 }; }, countCompleted() { return 1; },
     getItem() { return null; }, isContextRow() { return false; },
     exportData() { return { todos: [], categories }; },
-    importData() { importCount += 1; return { todos: 1, categories: 1 }; },
+    importData(data) {
+      importCount += 1;
+      if (options.onStoreImport) return options.onStoreImport(data);
+      return options.storeImportResult === undefined ? { todos: 1, categories: 1 } : options.storeImportResult;
+    },
     restore(items) { restored.push(items.map((item) => ({ ...item }))); return items; }
   };
   const Store = options.Store ?? mockStore;
@@ -611,11 +617,40 @@ function loadApp(options = {}) {
         if (options.markdownCheckRejects) return Promise.reject(new Error('markdown check reject'));
         return Promise.resolve(options.markdownCheckExternalResult ?? 'unchanged');
       },
+      readConflict() {
+        markdownReadConflictCalls += 1;
+        if (options.markdownReadThrows) throw new Error('raw read secret');
+        if (options.markdownReadRejects) return Promise.reject(new Error('raw read rejection'));
+        return Promise.resolve(options.markdownReadResult ?? {
+          status: 'ready', text: 'verified markdown', token: 'token-1'
+        });
+      },
+      importConflict(token, apply) {
+        markdownImportConflictCalls += 1;
+        if (options.markdownImportThrows) throw new Error('raw import secret');
+        if (options.markdownImportRejects) return Promise.reject(new Error('raw import rejection'));
+        if (options.onMarkdownImport) return options.onMarkdownImport(token, apply);
+        const applied = apply(options.verifiedText ?? 'verified markdown');
+        return Promise.resolve(options.markdownImportResult ?? {
+          status: applied === null ? 'apply-failed' : 'imported'
+        });
+      },
       getState() { return options.markdownState ?? null; },
       setErrorHandler(handler) { markdownErrorHandler = handler; },
       setStatusHandler(handler) {
         markdownStatusHandler = handler;
         handler({ phase: 'disconnected', fileName: null, lastSavedAt: null, saveError: false });
+      }
+    },
+    MarkdownImport: {
+      parse(text, current) {
+        if (options.markdownParse) return options.markdownParse(text, current);
+        return {
+          data: current,
+          summary: { total: current.todos.length, changed: 1, completedChanged: 1,
+            priorityChanged: 0, titleChanged: 0, tagsChanged: 0, categoryChanged: 0,
+            reparented: 0, reordered: 0 }
+        };
       }
     },
     Parse: { parseInput: () => ({ title: '', priority: null, tags: [] }) },
@@ -641,9 +676,10 @@ function loadApp(options = {}) {
   globalThis.__appTest = {
     showUndo, showNotice, undo, adoptExternal, render, renderTabs, renderTagBar, setFilter, saved,
     renderFileStatus, renderMarkdownStatus, syncMirrors, queueAdopt,
+    prepareMarkdownImport, confirmMarkdownImport, formatMarkdownImportSummary,
     setPendingImport(value) { pendingImport = value; },
     setChanging(categoryId, priorityId) { changingCategory = categoryId; changingPriority = priorityId; },
-    state() { return { pendingUndo, changingCategory, changingPriority, queuedNotice }; }
+    state() { return { pendingUndo, changingCategory, changingPriority, queuedNotice, pendingMarkdownImport }; }
   };
 })();\n`;
   vm.createContext(sandbox);
@@ -665,6 +701,8 @@ function loadApp(options = {}) {
     get markdownForceCalls() { return markdownForceCalls; },
     get markdownKeepExternalCalls() { return markdownKeepExternalCalls; },
     get markdownCheckExternalCalls() { return markdownCheckExternalCalls; },
+    get markdownReadConflictCalls() { return markdownReadConflictCalls; },
+    get markdownImportConflictCalls() { return markdownImportConflictCalls; },
     get loadCount() { return loadCount; }, get importCount() { return importCount; }
   };
 }
@@ -1024,7 +1062,7 @@ test('Markdown 연결 버튼은 지원 여부를 안내하고 picker에 현재 S
   assert.equal(supported.markdownSnapshots[0].categories[0].id, 'work');
 });
 
-test('정적 Markdown script·status·도움말은 CSP와 단방향 읽기 전용 계약을 지킨다', () => {
+test('정적 Markdown script·status·도움말은 CSP와 제한 편집 가져오기 계약을 지킨다', () => {
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const exportAt = html.indexOf('<script src="markdown-export.js"></script>');
   const syncAt = html.indexOf('<script src="markdown-sync.js"></script>');
@@ -1032,8 +1070,9 @@ test('정적 Markdown script·status·도움말은 CSP와 단방향 읽기 전�
   assert.ok(exportAt > 0 && exportAt < syncAt && syncAt < appAt);
   assert.match(html, /id="markdown-status"[^>]*role="status"/);
   assert.doesNotMatch(html, /id="markdown-status"[^>]*aria-live=/);
-  assert.match(html, /Markdown[^<]*(읽기 전용|단방향)/);
-  assert.match(html, /현재 Markdown 편집은 앱에 반영되지 않습니다/);
+  assert.match(html, /Markdown[^<]*지원되는 기존 할 일 편집/);
+  assert.match(html, /체크박스·P0~P3·제목·태그·형제 순서·기존 카테고리 이동·최대 2단계 재배치/);
+  assert.doesNotMatch(html, /현재 Markdown 편집은 앱에 반영되지 않습니다/);
   assert.doesNotMatch(html, /<script(?![^>]*src=)[^>]*>/);
 });
 
@@ -1341,14 +1380,157 @@ test('정적 Markdown 충돌 UI는 별도 accessible dialog와 모바일 button 
   assert.match(css, /\.markdown-conflict-resolve\s*\{[^}]*flex\s*:\s*none/s);
 });
 
-test('README/PRD/help는 Markdown best-effort TOCTOU 보호와 parser/import가 6단계임을 명시한다', () => {
+test('README/PRD/help는 Markdown best-effort TOCTOU 보호와 6B2 가져오기 범위를 명시한다', () => {
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   const prd = fs.readFileSync(path.join(ROOT, 'docs/todo-app-prd.md'), 'utf8');
   assert.match(html, /Markdown[^<]*외부 변경[^<]*(감지|충돌)/);
   assert.match(`${readme}\n${prd}`, /Markdown[\s\S]{0,400}(TOCTOU|read.?→.?write)/i);
   assert.match(`${readme}\n${prd}`, /Markdown[\s\S]{0,400}(best-effort|최선 노력)/i);
-  assert.match(`${readme}\n${prd}`, /6단계[\s\S]{0,120}(parser|파서|import|가져오기)/i);
+  assert.match(`${readme}\n${prd}`, /6B2[\s\S]{0,180}(미리|가져오기)/i);
+});
+
+test('Markdown 충돌 가져오기 정적 UI는 별도 preview와 CSP·모바일 계약을 가진다', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  assert.match(html, /id="markdown-conflict-dialog"[\s\S]*data-choice="import"[^>]*>Markdown 편집 가져오기<\/button>/);
+  assert.match(html, /<dialog id="markdown-import-dialog"[^>]*aria-labelledby="markdown-import-dialog-title"/);
+  assert.match(html, /id="markdown-import-dialog-text"/);
+  assert.match(html, /id="markdown-import-dialog"[\s\S]*data-choice="confirm"[^>]*>가져오기<\/button>/);
+  assert.ok(html.indexOf('markdown-import.js') < html.indexOf('markdown-sync.js'));
+  assert.doesNotMatch(html, /<script(?![^>]*src=)[^>]*>/);
+  assert.match(css, /@media[^{}]*\(max-width:[^)]*\)[\s\S]*?\.markdown-import-actions\s*\{[^}]*flex-wrap\s*:\s*wrap/s);
+});
+
+test('Markdown preview는 count summary만 textContent로 표시하고 원문·제목·태그·ID를 보존하지 않는다', async () => {
+  const raw = '- [ ] <img src=x> #secret <!-- my-what-todo:id=private -->';
+  const summary = { total: 3, changed: 2, completedChanged: 1, priorityChanged: 1,
+    titleChanged: 1, tagsChanged: 1, categoryChanged: 0, reparented: 0, reordered: 1 };
+  const app = loadApp({ markdownReadResult: { status: 'ready', text: raw, token: 'secret-token' },
+    markdownParse: () => ({ data: { malicious: raw }, summary }) });
+  await app.sandbox.__appTest.prepareMarkdownImport();
+  const preview = app.document.getElementById('markdown-import-dialog');
+  const text = app.document.getElementById('markdown-import-dialog-text');
+  assert.equal(preview.open, true);
+  assert.match(text.textContent, /전체 3개.*변경 2개.*완료 1.*우선순위 1.*제목 1.*태그 1.*순서 1/s);
+  assert.equal(text._htmlWrites, undefined);
+  assert.doesNotMatch(text.textContent + app.document.getElementById('toast').textContent, /img|secret|private|secret-token/);
+  assert.deepEqual(Object.keys(app.sandbox.__appTest.state().pendingMarkdownImport).sort(),
+    ['baseline', 'current', 'summary', 'token']);
+});
+
+test('Markdown preview parser 실패와 zero change는 dialog 없이 고정 안전 notice만 보인다', async () => {
+  const malicious = 'RAW-ID-777 <script>secret</script>';
+  const failed = loadApp({ markdownReadResult: { status: 'ready', text: malicious, token: 'x' },
+    markdownParse() { throw new Error(malicious); } });
+  await failed.sandbox.__appTest.prepareMarkdownImport();
+  assert.equal(failed.document.getElementById('markdown-import-dialog').open, false);
+  assert.equal(failed.document.getElementById('toast').textContent,
+    'Markdown 편집을 가져올 수 없습니다. 앱에서 생성한 형식과 지원 범위를 확인해 주세요.');
+  assert.doesNotMatch(failed.document.getElementById('toast').textContent, /RAW|script|secret|777/);
+
+  const zero = loadApp({ markdownParse: (_text, current) => ({ data: current,
+    summary: { total: 0, changed: 0, completedChanged: 0, priorityChanged: 0,
+      titleChanged: 0, tagsChanged: 0, categoryChanged: 0, reparented: 0, reordered: 0 } }) });
+  await zero.sandbox.__appTest.prepareMarkdownImport();
+  assert.equal(zero.document.getElementById('markdown-import-dialog').open, false);
+  assert.equal(zero.document.getElementById('toast').textContent, '가져올 Markdown 편집이 없습니다.');
+});
+
+test('preview 뒤 앱 baseline 변경은 Store/import/write/mirror 없이 안전하게 중단한다', async () => {
+  let revision = 0;
+  let storeImports = 0;
+  const base = loadApp().Store;
+  const Store = { ...base,
+    exportData: () => ({ todos: [], categories: [{ id: 'work', name: '업무', hue: 220 }], revision }),
+    importData: () => { storeImports += 1; return {}; } };
+  const app = loadApp({ Store });
+  await app.sandbox.__appTest.prepareMarkdownImport();
+  revision = 1;
+  await app.sandbox.__appTest.confirmMarkdownImport();
+  assert.equal(storeImports, 0);
+  assert.equal(app.fileSnapshots.length, 0);
+  assert.equal(app.markdownSnapshots.length, 0);
+  assert.equal(app.document.getElementById('toast').textContent,
+    '미리보기 뒤 앱 내용이 바뀌었습니다. 충돌 해결을 다시 열어 주세요.');
+});
+
+test('Markdown import 성공은 verified text 재parse·Store 1회·JSON mirror만 수행하고 count만 알린다', async () => {
+  const first = { todos: [], categories: [{ id: 'work', name: '업무', hue: 220 }] };
+  const applied = { todos: [{ id: 'safe' }], categories: first.categories };
+  let snapshot = first;
+  let imports = 0;
+  const parsedTexts = [];
+  const Store = { ...loadApp().Store, exportData: () => snapshot,
+    importData(data) { imports += 1; snapshot = data; return { todos: 1, categories: 1 }; } };
+  const app = loadApp({ Store, verifiedText: 'verified exact', markdownParse(text) {
+    parsedTexts.push(text);
+    return { data: applied, summary: { total: 1, changed: 1, completedChanged: 0,
+      priorityChanged: 0, titleChanged: 1, tagsChanged: 0, categoryChanged: 0,
+      reparented: 0, reordered: 0 } };
+  } });
+  app.sandbox.__appTest.showUndo([{ id: 'old' }]);
+  await app.sandbox.__appTest.prepareMarkdownImport();
+  await app.sandbox.__appTest.confirmMarkdownImport();
+  assert.deepEqual(parsedTexts, ['verified markdown', 'verified exact']);
+  assert.equal(imports, 1);
+  assert.deepEqual(app.fileSnapshots, [applied]);
+  assert.equal(app.markdownSnapshots.length, 0);
+  assert.equal(app.sandbox.__appTest.state().pendingUndo, null);
+  assert.equal(app.document.getElementById('search-input').value, '');
+  assert.equal(app.document.getElementById('toast').textContent, '1개 항목의 Markdown 편집을 가져왔습니다.');
+});
+
+test('Markdown applied-write/render 오류와 적용 뒤 rejection도 rollback 없이 UI와 JSON mirror를 끝낸다', async () => {
+  for (const status of ['applied-write-error', 'applied-render-error']) {
+    const app = loadApp({ markdownImportResult: { status }, storeImportResult: { todos: 1 } });
+    await app.sandbox.__appTest.prepareMarkdownImport();
+    await app.sandbox.__appTest.confirmMarkdownImport();
+    assert.equal(app.fileSnapshots.length, 1);
+    assert.equal(app.markdownSnapshots.length, 0);
+    assert.match(app.document.getElementById('toast').textContent,
+      /브라우저 저장에는 적용했지만 Markdown 정본 저장에 실패.*충돌은 유지/s);
+  }
+
+  const rejectedAfterApply = loadApp({
+    storeImportResult: { todos: 1 },
+    onMarkdownImport(_token, apply) {
+      apply('verified markdown');
+      return Promise.reject(new Error('private post-apply rejection'));
+    }
+  });
+  await rejectedAfterApply.sandbox.__appTest.prepareMarkdownImport();
+  await rejectedAfterApply.sandbox.__appTest.confirmMarkdownImport();
+  assert.equal(rejectedAfterApply.importCount, 1);
+  assert.equal(rejectedAfterApply.fileSnapshots.length, 1);
+  assert.equal(rejectedAfterApply.markdownSnapshots.length, 0);
+  assert.match(rejectedAfterApply.document.getElementById('toast').textContent,
+    /브라우저 저장에는 적용했지만 Markdown 정본 저장에 실패.*충돌은 유지/s);
+  assert.doesNotMatch(rejectedAfterApply.document.getElementById('toast').textContent, /private|rejection/);
+});
+
+test('Markdown Store 실패·changed·rejection은 UI reset이나 mirror 없이 안전하게 흡수한다', async () => {
+  const failed = loadApp({ storeImportResult: null });
+  await failed.sandbox.__appTest.prepareMarkdownImport();
+  await failed.sandbox.__appTest.confirmMarkdownImport();
+  assert.equal(failed.fileSnapshots.length, 0);
+  assert.equal(failed.markdownSnapshots.length, 0);
+  assert.equal(failed.document.getElementById('toast').textContent,
+    '브라우저 저장소에 저장하지 못했습니다. Markdown 충돌은 그대로 유지됩니다.');
+
+  const changed = loadApp({ onMarkdownImport: () => Promise.resolve({ status: 'changed' }) });
+  await changed.sandbox.__appTest.prepareMarkdownImport();
+  await changed.sandbox.__appTest.confirmMarkdownImport();
+  assert.equal(changed.importCount, 0);
+  assert.equal(changed.fileSnapshots.length, 0);
+  assert.equal(changed.document.getElementById('toast').textContent,
+    'Markdown 파일이 다시 바뀌었습니다. 충돌 해결을 다시 열어 주세요.');
+
+  const rejected = loadApp({ markdownImportRejects: true });
+  await rejected.sandbox.__appTest.prepareMarkdownImport();
+  await rejected.sandbox.__appTest.confirmMarkdownImport();
+  assert.match(rejected.document.getElementById('toast').textContent, /가져오지 못했습니다/);
+  assert.doesNotMatch(rejected.document.getElementById('toast').textContent, /raw|secret|rejection/);
 });
 
 (async () => {
