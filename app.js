@@ -88,11 +88,24 @@
   let childDraftFor = null;
   let focusDraft = false;
 
+  /**
+   * 하위 입력창에 치던 글자. **창이 아니라 내용이 죽는다** —
+   * render()가 목록을 통째로 다시 세우면서 값 없는 새 입력창을 끼워 넣기 때문에,
+   * 밖에 받아두지 않으면 다른 항목을 체크하는 순간 치던 글자가 사라진다.
+   */
+  let childDraftText = '';
+
   let pendingUndo = null;
   let undoTimer = null;
+  let queuedNotice = null;
 
   /** 삭제 확인을 기다리는 카테고리 id. 항목이 남아 있으면 옮겨갈 곳을 물어야 한다. */
   let pendingCategoryRemove = null;
+  let renamingCategory = null;
+  let changingCategory = null;
+
+  /** 파일이 정해진 뒤, 덮어쓰기 전에 백업 여부를 묻는 동안 들고 있는 내용. */
+  let pendingImport = null;
 
   /** 끌고 있는 항목의 id. 직접 순서 모드에서만 값이 찬다. */
   let draggingId = null;
@@ -107,8 +120,9 @@
     return node;
   };
 
+  /** 전부 훑어 찾으면 항목 수만큼 배열을 만든다. 선택자로 곧장 집는다. */
   const nodeFor = (id) =>
-    [...list.querySelectorAll('[data-id]')].find((node) => node.dataset.id === id) ?? null;
+    id ? list.querySelector(`[data-id="${CSS.escape(id)}"]`) : null;
 
   /**
    * 바깥을 눌러 대화상자를 닫는다.
@@ -159,13 +173,57 @@
   function adoptExternal() {
     editingId = null;
     childDraftFor = null;
+    childDraftText = '';
     pendingCategoryRemove = null;
+    renamingCategory = null;
     draggingId = null;
     hideUndo();
 
+    // 가져오기 확인을 기다리던 파일도 접는다. "지금 있는 N개는 사라집니다"의 N이
+    // 이미 옛날 숫자라, 그대로 누르게 두면 없는 것을 지운다고 말한 셈이 된다.
+    if (importDialog.open) importDialog.close();
+    pendingImport = null;
+
     Store.load();
     renderTheme();
+
+    // 뽀모도로 설정도 함께 갈렸다. 입력 칸을 되맞추지 않으면 저장본에는 50분이
+    // 들어 있는데 칸에는 25가 남아, 그대로 사이클을 돌리면 50:00이 뜬다.
+    syncPomoSettings(true);
+    renderPomo();
     render();
+  }
+
+  /**
+   * `queued`는 이번 프레임에 따라가기를 이미 예약했는지,
+   * `deferred`는 숨은 탭에서 읽어만 두고 그리기를 미뤄둔 것이 있는지를 나타낸다.
+   * (아래 storage 리스너와 visibilitychange 리스너 참고)
+   */
+  let adoptQueued = false;
+  let adoptDeferred = false;
+
+  /** 보이지 않는 탭에서는 읽기만 한다. rev를 최신으로 들고 있어야 다음 저장의 경합 검사가 산다. */
+  function adoptQuietly() {
+    Store.load();
+    adoptDeferred = true;
+  }
+
+  /** 연달아 들어오는 외부 변경을 한 프레임에 한 번으로 합친다. */
+  function queueAdopt() {
+    // requestAnimationFrame은 숨은 탭에서 멈춘다. 거기서 기다리면 읽지도 못한 채
+    // 남으므로, 보이지 않을 때는 프레임을 기다리지 않고 그 자리에서 읽는다.
+    if (document.hidden) {
+      adoptQuietly();
+      return;
+    }
+    if (adoptQueued) return;
+
+    adoptQueued = true;
+    requestAnimationFrame(() => {
+      adoptQueued = false;
+      if (document.hidden) adoptQuietly(); // 그 사이에 탭이 숨었다
+      else adoptExternal();
+    });
   }
 
   const fits = (title) => title && title.length <= Store.MAX_TITLE;
@@ -294,8 +352,10 @@
   // ────────────────────────────────────────────────────────────
   // 뽀모도로 타이머
   //
-  // 상태를 저장하지 않는다. 1초마다 저장하면 판 번호가 계속 올라가
-  // 다른 탭이 그때마다 다시 읽게 된다 (F-20). 새로고침하면 처음으로 돌아간다.
+  // 회차 설정은 저장본에 들어가지만 돌아가는 상태는 넣지 않는다. 1초마다 저장하면
+  // 판 번호가 계속 올라가 다른 탭이 그때마다 다시 읽게 된다 (F-20).
+  // 돌아가는 상태는 세션 저장소에 따로 남겨 새로고침을 넘긴다 — 판 번호를 건드리지
+  // 않고, 탭을 닫으면 사라진다 (F-22, savePomoRun 참고).
   // ────────────────────────────────────────────────────────────
 
   const POMO_MIN = 1;
@@ -303,6 +363,17 @@
 
   /** 원 둘레. 반지름 44인 원이라 2πr. 채움 길이를 이 값으로 잰다. */
   const DIAL_LENGTH = 2 * Math.PI * 44;
+
+  /**
+   * 같은 문자열을 다시 넣어도 텍스트 노드는 통째로 갈린다.
+   * 1초마다 도는 자리에서는 바뀐 것만 쓴다.
+   */
+  const setText = (node, value) => {
+    if (node.textContent !== value) node.textContent = value;
+  };
+
+  // 눈금 둘레는 변하지 않는다. 채워지는 길이만 매초 바뀐다.
+  pomoDialFill.style.strokeDasharray = String(DIAL_LENGTH);
 
   let pomoLength = 25 * 60; // 설정한 길이(초)
   let pomoLeft = pomoLength; // 남은 시간(초)
@@ -314,6 +385,58 @@
   let cyclePhase = 'focus'; // "focus" | "rest"
 
   const inCycle = () => cycleRound !== null;
+
+  /**
+   * 새로고침을 넘기려고 지금 상태를 세션 저장소에 남긴다 (F-22).
+   *
+   * 남은 초는 **돌아가는 동안에는 요약에 넣지 않는다.** 끝나는 시각에서 다시 나오는
+   * 값이라, 넣으면 1초마다 요약이 달라져 매초 쓰게 된다. 멈춰 있을 때만 그 값이
+   * 유일한 근거이므로 그때 넣는다. 덕분에 renderPomo를 매초 불러도 쓰기는
+   * 상태가 실제로 바뀔 때만 일어난다 — 시작·멈춤·구간 전환·길이 변경, 한 판에 열 번 남짓이다.
+   */
+  let savedRunSig = null;
+
+  const pomoRunSig = () =>
+    [pomoEndsAt, pomoLength, cycleRound, cyclePhase, pomoEndsAt === null ? pomoLeft : '-'].join('|');
+
+  function savePomoRun() {
+    const sig = pomoRunSig();
+    if (sig === savedRunSig) return;
+
+    savedRunSig = sig;
+    Store.saveRun({
+      endsAt: pomoEndsAt,
+      left: pomoLeft,
+      length: pomoLength,
+      round: cycleRound,
+      phase: cyclePhase
+    });
+  }
+
+  /** 남겨둔 타이머를 되살린다. 첫 화면을 그리기 전에 한 번만 부른다. */
+  function restorePomoRun() {
+    // 되살릴 것이 없으면 지금 상태를 이미 남긴 것으로 친다.
+    // 그래야 타이머를 건드린 적 없는 사람에게 아무것도 쓰지 않는다.
+    savedRunSig = pomoRunSig();
+
+    const run = Store.loadRun();
+    if (!run) return;
+
+    pomoLength = run.length;
+    pomoLeft = run.left;
+    cycleRound = run.round;
+    cyclePhase = run.phase;
+
+    if (run.endsAt === null) return; // 멈춰 있었다. 남은 시간 그대로 세워둔다.
+
+    // 자리를 비운 사이에 끝났으면 끝난 자리에 세워둔다. 지금 와서 소리를 내거나
+    // 다음 구간으로 넘기지 않는다 — 흘려보낸 시간을 이제 와 되돌릴 수는 없다.
+    pomoLeft = Math.max(0, Math.round((run.endsAt - Date.now()) / 1000));
+    if (pomoLeft === 0) return;
+
+    pomoStart();
+    togglePomo(true); // 돌아가는 중이라면 보이는 편이 맞다
+  }
 
   const pomoClock = (sec) =>
     `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
@@ -340,7 +463,14 @@
   function pomoRefresh() {
     if (pomoEndsAt === null) return;
 
-    pomoLeft = Math.max(0, Math.round((pomoEndsAt - Date.now()) / 1000));
+    const left = Math.max(0, Math.round((pomoEndsAt - Date.now()) / 1000));
+
+    // 초 단위로 깨우면 경계를 최대 1초까지 놓친다. 그래서 250ms마다 들여다보되,
+    // 남은 초가 그대로면 화면에 바뀔 것이 없으므로 손대지 않는다.
+    // 매번 그리면 같은 값을 네 번에 세 번꼴로 다시 쓰고, 문서 제목까지 그때마다 건드린다.
+    if (left === pomoLeft) return;
+
+    pomoLeft = left;
     if (pomoLeft === 0) pomoFinish();
     else renderPomo();
   }
@@ -408,7 +538,7 @@
     cycleEnter(nextRound, nextPhase, true);
 
     pomoChime(nextPhase === 'focus');
-    showNotice(`${ended} 끝 — 이어서 ${phaseLabel()}`);
+    showNotice(`${ended} 구간이 끝났습니다. 이어서 ${phaseLabel()} 구간을 시작합니다.`);
   }
 
   /** 소리 파일을 두지 않는다 — 외부 요청 0건을 지키려고 그 자리에서 만든다. */
@@ -443,14 +573,23 @@
   }
 
   function renderDots() {
-    pomoDots.textContent = '';
+    // 회차 수는 고정이다. 매번 헐고 다시 세우면 바뀐 것이 없는 초에도
+    // 점 네 개가 계속 새로 만들어진다. 한 번만 세우고 표시만 갈아 끼운다.
+    if (pomoDots.children.length !== Store.POMO_ROUNDS) {
+      pomoDots.textContent = '';
 
-    for (let i = 0; i < Store.POMO_ROUNDS; i++) {
-      const dot = el('li', 'pomo-dot');
-      if (inCycle() && i < cycleRound) dot.classList.add('is-done');
-      if (inCycle() && i === cycleRound) dot.classList.add('is-now');
-      dot.textContent = String(i + 1);
-      pomoDots.appendChild(dot);
+      for (let i = 0; i < Store.POMO_ROUNDS; i++) {
+        const dot = el('li', 'pomo-dot');
+        dot.textContent = String(i + 1);
+        pomoDots.appendChild(dot);
+      }
+    }
+
+    const cycle = inCycle();
+    for (let i = 0; i < pomoDots.children.length; i++) {
+      // toggle은 이미 그 상태면 속성을 건드리지 않는다.
+      pomoDots.children[i].classList.toggle('is-done', cycle && i < cycleRound);
+      pomoDots.children[i].classList.toggle('is-now', cycle && i === cycleRound);
     }
   }
 
@@ -459,18 +598,19 @@
     const clock = pomoClock(pomoLeft);
     const label = phaseLabel();
 
-    pomoTime.textContent = clock;
-    pomoPhase.textContent = label;
+    setText(pomoTime, clock);
+    setText(pomoPhase, label);
     pomoPhase.hidden = label === '';
 
     // 끝난 뒤에는 한 번 더 눌러 바로 다음 판을 돌릴 수 있게 한다.
-    pomoToggle.textContent = running
+    const toggleLabel = running
       ? '일시정지'
       : pomoLeft === 0
         ? '다시 시작'
         : pomoLeft < pomoLength
           ? '계속'
           : '시작';
+    setText(pomoToggle, toggleLabel);
 
     pomoPanel.classList.toggle('is-running', running);
     pomoPanel.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
@@ -479,7 +619,8 @@
     pomoCycleButton.classList.toggle('is-active', inCycle());
 
     // 배경 탭에서도 남은 시간이 보이게 제목에 얹는다
-    document.title = running ? `${clock} · ${BASE_TITLE}` : BASE_TITLE;
+    const title = running ? `${clock} · ${BASE_TITLE}` : BASE_TITLE;
+    if (document.title !== title) document.title = title;
 
     for (const preset of document.querySelectorAll('.pomo-preset[data-minutes]')) {
       preset.classList.toggle(
@@ -490,11 +631,13 @@
 
     // 흐른 만큼 원이 채워진다
     const done = pomoLength > 0 ? 1 - pomoLeft / pomoLength : 0;
-    pomoDialFill.style.strokeDasharray = String(DIAL_LENGTH);
     pomoDialFill.style.strokeDashoffset = String(DIAL_LENGTH * (1 - done));
-    pomoDialTime.textContent = clock;
-    pomoDialPhase.textContent = label || `${Math.round(pomoLength / 60)}분`;
+    setText(pomoDialTime, clock);
+    setText(pomoDialPhase, label || `${Math.round(pomoLength / 60)}분`);
     renderDots();
+
+    // 상태가 바뀐 자리마다 부르지 않는다. 어차피 전부 여기를 지나므로 여기서 한 번만 본다.
+    savePomoRun();
   }
 
   /**
@@ -555,19 +698,60 @@
     node.hidden = !next;
     button.setAttribute('aria-expanded', String(next));
     button.classList.toggle('is-active', next);
+
+    // 라벨은 여는 자리에서만 고치면 안 된다. Esc로 닫는 길이 따로 있어
+    // 거기서 "시계 접기"에 멈춘 채 남는다. 상태를 바꾸는 곳에서 늘 함께 고친다.
+    if (button === pomoExpand) {
+      button.setAttribute('aria-label', next ? '시계 접기' : '시계 펼치기');
+    }
   }
 
   // ────────────────────────────────────────────────────────────
   // 카테고리 관리
   // ────────────────────────────────────────────────────────────
 
+  /** 다음 프레임에 넣기로 한 오류 문구. 그 사이에 지워졌으면 넣지 않는다. */
+  let waitingCategoryError = null;
+
+  /**
+   * 카테고리 오류 문구.
+   *
+   * `#category-error`는 `role="alert"`이다. 이런 영역은 **이미 접근성 트리에 있는 상태에서
+   * 내용이 바뀌어야** 읽힌다. 숨김이 풀리는 것과 글이 채워지는 것이 한 태스크 안에서
+   * 함께 일어나면 브라우저는 "글을 가진 영역이 통째로 새로 생겼다"고 보고, 일부
+   * 스크린리더는 그것을 읽지 않는다. **두 줄의 순서를 바꾸는 것으로는 달라지지 않는다** —
+   * 접근성 트리는 태스크가 끝난 뒤에 한 번 정리되므로 같은 태스크 안의 순서는 보이지 않는다.
+   * 그래서 자리를 빈 채로 먼저 열고, 글은 다음 태스크에 넣어 실제로 태스크를 건넌다.
+   *
+   * 건너는 수단은 `setTimeout`이다. `requestAnimationFrame`은 **배경 탭에서 멈춘다** —
+   * 탭이 숨은 채로 이 함수가 불리면 상자만 열리고 글은 영영 들어가지 않아,
+   * 사용자에게는 빈 상자가, 스크린리더에는 읽을 것이 없는 영역이 남는다.
+   */
   function showCategoryError(text) {
-    catError.textContent = text;
-    catError.hidden = !text;
+    // 문구를 띄우는 것만으로는 "이 칸이 지금 잘못됐다"가 전해지지 않는다.
+    // 칸 자체에 표시해야 화면을 못 보는 사람도 어디를 고쳐야 하는지 안다.
+    catName.setAttribute('aria-invalid', text ? 'true' : 'false');
+
+    waitingCategoryError = text || null;
+    catError.textContent = '';
+
+    if (!text) {
+      catError.hidden = true;
+      return;
+    }
+
+    catError.hidden = false;
+    setTimeout(() => {
+      if (waitingCategoryError === null) return; // 그 사이에 지워졌다
+      catError.textContent = waitingCategoryError;
+    });
   }
 
   function renderCategoryPanel() {
     if (catPanel.hidden) return;
+    // 이름을 고치는 중이면 다시 그리지 않는다. 입력칸이 통째로 갈려
+    // 치던 내용과 커서가 사라지기 때문이다. 할 일 제목을 고칠 때와 같은 규칙이다.
+    if (renamingCategory !== null) return;
 
     const list = Store.getCategories();
     catList.textContent = '';
@@ -578,8 +762,12 @@
       const dot = el('span', 'cat-dot');
       paintCategory(dot, cat);
 
-      const name = el('span', 'cat-name');
+      const name = el('button', 'cat-name');
+      name.type = 'button';
+      name.dataset.action = 'rename-category';
+      name.dataset.id = cat.id;
       name.textContent = cat.name;
+      name.setAttribute('aria-label', `카테고리 이름 바꾸기: ${cat.name}`);
 
       const count = el('span', 'cat-count');
       const used = Store.countInCategory(cat.id);
@@ -648,6 +836,7 @@
     catPanel.hidden = !next;
     gear.setAttribute('aria-expanded', String(next));
     pendingCategoryRemove = null;
+    renamingCategory = null; // 패널을 닫으면 고치던 것도 함께 접는다
     showCategoryError('');
 
     if (next) {
@@ -731,18 +920,43 @@
   // 렌더링 — 상태가 바뀌면 목록 전체를 다시 그린다. diff하지 않는다.
   // ────────────────────────────────────────────────────────────
 
+  /**
+   * 렌더가 통째로 헐고 다시 세우는 영역들.
+   *
+   * 할 일 목록만 지키면 카테고리 탭·태그 바·카테고리 패널에서 누른 버튼이 매 렌더마다
+   * 사라져 포커스가 <body>로 떨어진다. 여기 없는 곳(추가 입력창·검색창·정렬 상자)은
+   * 다시 세우지 않으므로 손대지 않는다 — 건드리면 커서 위치와 선택 영역이 함께 날아간다.
+   */
+  const focusScopes = () => [list, tabs, tagBar, catList];
+
   function captureFocus() {
     const active = document.activeElement;
-    if (!active || !list.contains(active)) return null;
-    if (active.dataset.draft) return { draft: true };
+    if (!active) return null;
 
+    const scope = focusScopes().find((box) => box.contains(active));
+    if (!scope) return null;
+
+    if (active.dataset.draft) return { draft: true, caret: active.selectionStart };
+
+    // data-id는 할 일에서는 바깥 <li>에, 카테고리 패널에서는 버튼 자신에 붙는다.
+    // closest는 둘 다 집는다. 탭과 태그 바에는 아예 없어 null이 된다.
     const node = active.closest('[data-id]');
-    if (!node) return null;
+    const action = active.dataset.action ?? null;
+
+    // 태그의 ×는 누르는 순간 그 태그와 함께 사라진다. 같은 자리의 다음 ×로
+    // 내려가려면 몇 번째였는지도 들고 있어야 한다.
+    const siblings =
+      action === 'remove-tag' && node
+        ? [...node.querySelectorAll('[data-action="remove-tag"]')]
+        : [];
 
     return {
-      id: node.dataset.id,
-      action: active.dataset.action ?? null,
-      tag: active.dataset.tag ?? null
+      scope,
+      id: node?.dataset.id ?? null,
+      action,
+      value: active.dataset.value ?? null,
+      tag: active.dataset.tag ?? null,
+      at: siblings.indexOf(active)
     };
   }
 
@@ -750,17 +964,44 @@
     if (!mark) return;
 
     if (mark.draft) {
-      list.querySelector('[data-draft]')?.focus();
+      const draft = list.querySelector('[data-draft]');
+      if (!draft) return;
+
+      // 값을 되돌려 넣은 새 입력창이라 캐럿이 맨 앞으로 간다. 치던 자리로 되돌린다.
+      const at = mark.caret ?? draft.value.length;
+      draft.focus();
+      draft.setSelectionRange(at, at);
       return;
     }
 
-    const node = nodeFor(mark.id);
+    if (mark.action) {
+      const attrs =
+        `[data-action="${mark.action}"]` +
+        (mark.value === null ? '' : `[data-value="${CSS.escape(mark.value)}"]`) +
+        (mark.tag === null ? '' : `[data-tag="${CSS.escape(mark.tag)}"]`);
+
+      // 같은 버튼이 항목마다 하나씩 있다. 어느 항목의 것이었는지로 좁힌다.
+      for (const found of mark.scope.querySelectorAll(attrs)) {
+        if ((found.closest('[data-id]')?.dataset.id ?? null) !== mark.id) continue;
+        found.focus();
+        return;
+      }
+    }
+
+    if (mark.id === null) return;
+    const node = mark.scope.querySelector(`[data-id="${CSS.escape(mark.id)}"]`);
     if (!node) return;
 
-    const selector = mark.action
-      ? `[data-action="${mark.action}"]${mark.tag ? `[data-tag="${CSS.escape(mark.tag)}"]` : ''}`
-      : null;
-    (node.querySelector(selector ?? ':scope') ?? node).focus();
+    // 누르던 버튼이 사라졌다 — 태그의 ×를 눌러 그 태그가 없어진 경우다.
+    // 같은 자리의 다음 ×로, 그것도 없으면 제목 버튼으로 내려간다.
+    // 바깥 <li>에는 tabindex가 없어 focus()를 불러도 아무 일도 일어나지 않는다.
+    const removers = node.querySelectorAll('[data-action="remove-tag"]');
+    const next =
+      (mark.at >= 0 && removers.length
+        ? removers[Math.min(mark.at, removers.length - 1)]
+        : null) ?? node.querySelector('[data-action="edit"]');
+
+    next?.focus();
   }
 
   /**
@@ -782,7 +1023,10 @@
     return handle;
   }
 
-  /** 우선순위 마커. `보통`은 아무것도 그리지 않지만 자리는 차지한다. (PRD §7) */
+  /**
+   * 우선순위 마커. 네 단계를 숫자 그대로 보여준다 — 0이 가장 높다.
+   * inert면 문맥 행이라 누를 수 없는 span으로 그린다. (PRD §7)
+   */
   function renderPriority(item, inert) {
     if (inert) {
       const shown = el('span', `todo-priority is-p${item.priority}`);
@@ -891,7 +1135,19 @@
 
     if (isRoot) {
       const cat = categoryOf(item.category);
-      const badge = el('span', 'badge');
+
+      // 문맥 행은 보여주기만 한다. 그 밖에는 눌러서 소속을 바꾼다 (F-03).
+      // 하위는 상위를 따라가므로 상위 행에만 붙는다 — store도 하위의 카테고리
+      // 변경은 거절한다.
+      const badge = context ? el('span', 'badge') : el('button', 'badge');
+      if (!context) {
+        badge.type = 'button';
+        badge.dataset.action = 'change-category';
+        badge.setAttribute(
+          'aria-label',
+          `카테고리 변경: ${item.title}, 현재 ${cat?.name ?? '없음'}`
+        );
+      }
       badge.textContent = cat?.name ?? '';
       if (cat) paintCategory(badge, cat);
       row.appendChild(badge);
@@ -927,7 +1183,14 @@
     draft.type = 'text';
     draft.dataset.draft = '1';
     draft.placeholder = '하위 할 일';
+    draft.value = childDraftText; // 재렌더를 넘어 치던 내용을 되돌려 넣는다
     draft.setAttribute('aria-label', `하위 할 일 입력: ${root.title}`);
+
+    // 치는 족족 밖에 받아둔다. 이 입력창은 매 렌더마다 새로 만들어지므로
+    // 여기서 받아두지 않으면 다른 항목을 체크하는 순간 내용이 빈 문자열이 된다.
+    draft.addEventListener('input', () => {
+      childDraftText = draft.value;
+    });
 
     draft.addEventListener('keydown', (e) => {
       if (e.isComposing) return;
@@ -946,6 +1209,7 @@
         return;
       }
       if (fits(parsed.title) && saved(Store.addChild(root.id, parsed))) {
+        childDraftText = ''; // 넣었으니 빈 칸으로 다시 연다
         focusDraft = true;
         render(); // 입력창은 그 자리에 다시 열린다
       } else {
@@ -959,18 +1223,31 @@
   }
 
   function render() {
-    if (editingId !== null) return;
+    // 그 자리에서 고치는 중이면 다시 그리지 않는다. 통째로 헐면 편집기와
+    // 고르던 목록이 함께 사라진다.
+    if (editingId !== null || changingCategory !== null) return;
 
     // 필터 중인 태그가 사라졌으면 전체로 돌아온다 (F-09).
     // 검색어를 뺀 채로 물어야 한다 — 검색 결과가 0건인 것과 태그가 없어진 것은 다르다.
+    //
+    // 저절로 풀린 것은 말해준다. 아무 말 없이 목록이 늘어나면 무엇이 잘못됐는지
+    // 알 길이 없다. 되돌릴 것이 걸려 있으면 showNotice가 알아서 뒤로 미룬다.
     if (
       filter.type === 'tag' &&
       Store.getRoots({ type: 'tag', value: filter.value }).length === 0
     ) {
+      showNotice(`#${filter.value} 태그가 없어져 전체 목록으로 돌아왔습니다.`);
       filter = { type: 'all', query: filter.query };
     }
-    // 필터 중인 카테고리를 지웠을 때도 마찬가지다
+    // 필터 중인 카테고리를 지웠을 때도 마찬가지다.
+    // 이름은 아직 categoryCache에 남아 있다 — 새 목록은 몇 줄 아래에서 받아온다.
     if (filter.type === 'category' && !Store.getCategories().some((c) => c.id === filter.value)) {
+      const gone = categoryName(filter.value);
+      showNotice(
+        gone
+          ? `${gone} 카테고리가 없어져 전체 목록으로 돌아왔습니다.`
+          : '고른 카테고리가 없어져 전체 목록으로 돌아왔습니다.'
+      );
       filter = { type: 'all', query: filter.query };
     }
 
@@ -1037,6 +1314,8 @@
   }
 
   function openChildDraft(rootId) {
+    // 다른 상위에서 치다 만 내용이 따라오면 안 된다
+    if (childDraftFor !== rootId) childDraftText = '';
     childDraftFor = rootId;
     focusDraft = true;
     render();
@@ -1045,6 +1324,7 @@
   function closeChildDraft() {
     const rootId = childDraftFor;
     childDraftFor = null;
+    childDraftText = '';
     render();
     nodeFor(rootId)?.querySelector('[data-action="add-child"]')?.focus();
   }
@@ -1062,6 +1342,29 @@
   // ────────────────────────────────────────────────────────────
   // 인라인 수정 (F-03)
   // ────────────────────────────────────────────────────────────
+
+  /** 지금 버튼이 눌려 있는지. 편집을 언제 끝내 그려도 되는지 판단하는 데만 쓴다. */
+  let pressing = false;
+  addEventListener('pointerdown', () => { pressing = true; }, true);
+  addEventListener('pointerup', () => { pressing = false; }, true);
+  addEventListener('pointercancel', () => { pressing = false; }, true);
+
+  /**
+   * 편집기가 포커스를 잃어 편집이 끝난 뒤 목록을 다시 그린다. **그 자리에서 그리지 않는다.**
+   *
+   * 마우스는 mousedown → focusout → mouseup → click 순서로 돈다. focusout에서 목록을
+   * 통째로 다시 세우면 mousedown을 받은 버튼이 떨어져 나가고, 이어질 click은 갈 곳을
+   * 잃는다. 편집을 끝내려고 누른 그 첫 클릭이 통째로 삼켜지는 것이다.
+   * 그래서 버튼에서 손을 뗄 때까지 기다렸다가 그린다.
+   *
+   * 키보드나 프로그램으로 포커스가 옮겨간 경우엔 눌린 버튼이 없으니 다음 태스크에서
+   * 바로 그린다. 어느 쪽이든 지금 이 자리에서 그리지 않는 것이 핵심이다.
+   */
+  function renderAfterPress() {
+    const draw = () => setTimeout(() => render(), 0);
+    if (pressing) addEventListener('pointerup', draw, { once: true, capture: true });
+    else draw();
+  }
 
   function startEdit(id) {
     if (editingId !== null) return;
@@ -1083,7 +1386,12 @@
     editor.focus();
     editor.select();
 
-    const finish = (save) => {
+    /**
+     * byKey면 Enter나 Escape로 끝낸 것이다 — 그 자리에서 그리고 제목 버튼으로 돌아간다.
+     * 포커스가 빠져나가 끝난 경우엔 그리기를 미루고 포커스도 건드리지 않는다.
+     * 사용자가 이미 다른 곳을 골랐기 때문이다. (renderAfterPress 참고)
+     */
+    const finish = (save, byKey) => {
       if (editingId !== id) return;
       editingId = null;
 
@@ -1102,6 +1410,18 @@
           saved(Store.update(id, patch));
         }
       }
+
+      if (!byKey) {
+        // 편집기는 지금 걷어낸다. 이 자리만 바꾸므로 방금 누른 버튼은 살아남고,
+        // 그리기를 미룬 사이에 바로 다른 항목을 고치기 시작해도 빈 편집기가
+        // 남지 않는다 (그때는 미뤄둔 render가 통째로 건너뛴다).
+        const fresh = itemFor(id);
+        if (fresh) titleEl.textContent = fresh.title;
+        editor.replaceWith(titleEl);
+
+        renderAfterPress();
+        return;
+      }
       render();
       nodeFor(id)?.querySelector('[data-action="edit"]')?.focus();
     };
@@ -1110,13 +1430,80 @@
       if (e.isComposing) return;
       if (e.key === 'Enter') {
         e.preventDefault();
-        finish(true);
+        finish(true, true);
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        finish(false);
+        finish(false, true);
       }
     });
-    editor.addEventListener('blur', () => finish(true));
+    editor.addEventListener('focusout', () => finish(true, false));
+  }
+
+  /**
+   * 카테고리를 그 자리에서 바꾼다. 제목 편집과 같은 방식이다 —
+   * 배지가 목록으로 바뀌고, 고르면 들어가고, Escape로 물린다.
+   *
+   * 순환 버튼으로 하지 않은 이유는 카테고리가 최대 64개까지 늘기 때문이다.
+   * 열 개만 돼도 원하는 것에 닿기까지 아홉 번을 눌러야 한다.
+   */
+  function startCategoryChange(id) {
+    if (changingCategory !== null || editingId !== null) return;
+
+    const item = itemFor(id);
+    const node = nodeFor(id);
+    if (!item || !node) return;
+
+    const badge = node.querySelector('[data-action="change-category"]');
+    if (!badge) return;
+
+    const list = Store.getCategories();
+    const picker = el('select', 'badge-select');
+    picker.setAttribute('aria-label', `카테고리 변경: ${item.title}`);
+
+    for (const cat of list) {
+      const option = el('option');
+      option.value = cat.id;
+      option.textContent = cat.name;
+      picker.appendChild(option);
+    }
+    picker.value = item.category;
+
+    changingCategory = id;
+    badge.replaceWith(picker);
+    picker.focus();
+
+    const finish = (save, byKey) => {
+      if (changingCategory !== id) return;
+      changingCategory = null;
+
+      // 같은 것을 다시 골랐으면 저장할 일이 없다. 판 번호만 괜히 올라간다.
+      if (save && picker.value !== item.category) saved(Store.update(id, { category: picker.value }));
+
+      if (!byKey) {
+        // 제목 편집과 같은 이유로 이 자리만 되돌린다 (startEdit의 주석 참고).
+        const fresh = itemFor(id);
+        const cat = fresh ? categoryOf(fresh.category) : null;
+        badge.textContent = cat?.name ?? '';
+        if (cat) paintCategory(badge, cat);
+        picker.replaceWith(badge);
+
+        renderAfterPress();
+        return;
+      }
+      render();
+      nodeFor(id)?.querySelector('[data-action="change-category"]')?.focus();
+    };
+
+    // 고르는 순간 들어간다. native 목록은 페이지 위 버튼을 누르는 것이 아니라
+    // 그 자리에서 그려도 다른 클릭을 삼키지 않는다.
+    picker.addEventListener('change', () => finish(true, true));
+    picker.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      finish(false, true);
+    });
+    // 고르지 않고 빠져나갔으면 물린다. 골랐다면 change가 이미 끝냈다.
+    picker.addEventListener('focusout', () => finish(false, false));
   }
 
   // ────────────────────────────────────────────────────────────
@@ -1135,12 +1522,30 @@
     toast.textContent = '';
 
     if (hadFocus) input.focus();
+
+    // 자리를 비켜 기다리던 알림이 있으면 이제 보여준다.
+    if (queuedNotice !== null) {
+      const text = queuedNotice;
+      queuedNotice = null;
+      showNotice(text);
+    }
   }
 
-  /** 되돌릴 것이 없는 단순 알림. 토스트를 같이 쓴다. */
+  /**
+   * 되돌릴 것이 없는 단순 알림. 토스트를 같이 쓴다.
+   *
+   * **되돌릴 것이 걸려 있는 동안에는 자리를 뺏지 않는다.** 뽀모도로는 아무 때나
+   * 구간이 끝나므로, 방금 지운 항목의 5초가 그 알림에 덮여 사라지곤 했다.
+   * 알림은 뒤에 다시 뜨지만, 지운 항목은 그 5초가 지나면 영영 되살릴 수 없다.
+   * 미뤄둔 알림은 하나만 들고 있는다 — 밀린 것을 줄줄이 띄우는 편이 더 나쁘다.
+   */
   function showNotice(text) {
+    if (pendingUndo !== null) {
+      queuedNotice = text;
+      return;
+    }
+
     clearTimeout(undoTimer);
-    pendingUndo = null;
 
     const label = el('span');
     label.textContent = text;
@@ -1152,13 +1557,21 @@
     undoTimer = setTimeout(hideUndo, UNDO_MS);
   }
 
-  function showUndo(removed) {
+  /**
+   * 지운 항목을 되돌릴 토스트.
+   *
+   * note를 주면 그 문장을 대신 띄우되 버튼은 그대로 남긴다 — 되살리기가 실패한
+   * 자리에서 쓴다. 거기서 showNotice로 알리면 버튼이 사라져, 실패했다는 말과 함께
+   * 되돌릴 길까지 없어진다.
+   */
+  function showUndo(removed, note) {
     clearTimeout(undoTimer);
     pendingUndo = removed;
 
     const label = el('span');
     // 하위가 함께 지워진 경우에만 개수를 밝힌다 (F-04)
-    label.textContent = removed.length > 1 ? `${removed.length}개 항목이 삭제됨` : '삭제됨';
+    label.textContent =
+      note ?? (removed.length > 1 ? `${removed.length}개 항목이 삭제됨` : '삭제됨');
 
     const button = el('button', 'toast-undo');
     button.type = 'button';
@@ -1174,21 +1587,54 @@
 
   function undo() {
     const items = pendingUndo;
-    hideUndo();
     if (!items) return;
 
-    saved(Store.restore(items)); // parentId와 order를 그대로 되살리므로 트리째 돌아온다
-    render();
+    // 버튼을 눌러 들어왔는지 미리 본다. 실패해 토스트를 다시 세울 때쯤이면
+    // 포커스가 이미 입력창으로 밀려나 있다.
+    const fromToast = toast.contains(document.activeElement);
+
+    // 되살아난 것을 확인한 뒤에 토스트를 거둔다. 먼저 거두면 저장에 실패했을 때
+    // 다시 누를 곳이 사라져 지운 항목이 영영 돌아오지 않는다.
+    if (Store.restore(items) !== null) {
+      // 미뤄둔 알림은 이 삭제가 부른 결과를 설명하던 것이다. 되살렸으니 이제
+      // 틀린 말이 된다 — "태그가 없어졌다"고 알리는 사이에 그 태그는 돌아와 있다.
+      queuedNotice = null;
+
+      // parentId와 order를 그대로 되살리므로 트리째 돌아온다
+      hideUndo();
+      render();
+      return;
+    }
+
+    // 실패는 saved()에 맡기지 않는다. saved()의 알림은 되돌릴 것이 걸려 있으면
+    // 뒤로 미뤄져 아무 말도 못 하고, 충돌이면 adoptExternal이 토스트째 접어버린다.
+    // 실패를 바로 알리면서 다시 누를 버튼도 남겨야 하므로 둘을 한 토스트에 담는다.
+    const conflict = Store.lastError === 'conflict';
+    if (conflict) adoptExternal(); // 낡은 판으로 다시 눌러봐야 또 부딪힌다
+
+    showUndo(
+      items,
+      conflict
+        ? '다른 탭에서 먼저 바뀌었습니다. 최신 내용을 불러왔으니 다시 눌러주세요.'
+        : '되살리지 못했습니다. 다시 눌러주세요.'
+    );
+    if (fromToast) toast.querySelector('.toast-undo')?.focus();
   }
 
   function handleDelete(id, viaKeyboard) {
     const removed = saved(Store.remove(id));
     if (!removed) return;
 
-    if (removed.some((t) => t.id === childDraftFor)) childDraftFor = null;
+    if (removed.some((t) => t.id === childDraftFor)) {
+      childDraftFor = null;
+      childDraftText = '';
+    }
 
-    render();
+    // 되돌릴 것을 **먼저** 세운다. 순서를 뒤집으면, 그리는 도중에 나온 알림
+    // (태그 필터가 저절로 풀렸다는 것 같은)이 곧바로 실행 취소 토스트에 덮여
+    // 사라진다. 먼저 세워두면 showNotice가 그 알림을 뒤로 미뤄준다.
     showUndo(removed);
+    render();
 
     // 지운 행이 사라지면서 포커스도 함께 없어진다. 토스트는 DOM 맨 끝이라
     // Tab으로는 5초 안에 닿기 어렵다. 키보드로 지운 경우엔 바로 얹어준다.
@@ -1219,6 +1665,9 @@
         break;
       case 'edit':
         startEdit(id);
+        break;
+      case 'change-category':
+        startCategoryChange(id);
         break;
       case 'add-child':
         openChildDraft(id);
@@ -1305,11 +1754,7 @@
   });
 
   pomoExpand.addEventListener('click', () => {
-    togglePomoView(pomoDial, pomoExpand, undefined);
-    pomoExpand.setAttribute(
-      'aria-label',
-      pomoDial.hidden ? '시계 펼치기' : '시계 접기'
-    );
+    togglePomoView(pomoDial, pomoExpand, undefined); // 라벨은 togglePomoView가 함께 고친다
     renderPomo();
   });
 
@@ -1326,7 +1771,14 @@
     const cycle = Store.getPomodoro();
     cycle[Number(field.dataset.round)][field.dataset.key] = Number(field.value);
 
-    if (!saved(Store.setPomodoro(cycle))) return;
+    if (!saved(Store.setPomodoro(cycle))) {
+      // 변경이 통째로 되돌아갔다. 칸에 남은 값은 이제 저장본과 다르므로,
+      // 포커스가 그 칸에 있어도 강제로 되맞춘다. 안 그러면 화면은 50분인데
+      // 실제로 도는 것은 25분이 된다.
+      syncPomoSettings(true);
+      renderPomo();
+      return;
+    }
 
     syncPomoSettings(false);
     // 지금 돌고 있지 않은 구간이면 새 길이를 곧바로 반영한다
@@ -1356,7 +1808,15 @@
 
   // 배경 탭에서는 인터벌이 느려진다. 돌아오면 곧바로 다시 맞춘다.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) pomoRefresh();
+    if (document.hidden) return;
+
+    pomoRefresh();
+
+    // 숨어 있는 동안 읽어만 두고 미뤄둔 변경이 있으면 이제 화면에 옮긴다.
+    if (adoptDeferred) {
+      adoptDeferred = false;
+      adoptExternal();
+    }
   });
 
   helpDialog.addEventListener('click', (e) => {
@@ -1376,7 +1836,9 @@
   searchInput.addEventListener('input', () => setQuery(searchInput.value));
 
   searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && searchInput.value) {
+    // 조합 중의 Escape는 IME가 조합을 무르는 키다. 여기서 받으면 치던 글자가 아니라
+    // 검색어 전체가 날아간다.
+    if (e.key === 'Escape' && !e.isComposing && searchInput.value) {
       e.preventDefault();
       searchInput.value = '';
       setQuery('');
@@ -1411,8 +1873,10 @@
     const removed = saved(Store.removeCompleted());
     if (!removed) return;
 
-    render();
+    // handleDelete와 같은 이유로 되돌릴 것을 먼저 세운다 — 그리는 도중에 나온
+    // 알림이 실행 취소 토스트에 덮이지 않게.
     showUndo(removed);
+    render();
     toast.querySelector('.toast-undo')?.focus();
   });
 
@@ -1427,7 +1891,10 @@
     link.href = url;
     link.download = name;
     link.click();
-    URL.revokeObjectURL(url);
+
+    // 바로 거두면 브라우저가 아직 blob을 읽기 전이라 내려받기가 취소될 수 있다.
+    // 한 박자 뒤에 거둔다.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   /** 파일명에 붙일 날짜. toISOString()은 UTC라 한국 오전에는 하루 전으로 찍힌다. */
@@ -1439,16 +1906,15 @@
 
   exportButton.addEventListener('click', () => {
     download(Store.exportData(), `my-task-${stamp()}.json`);
-    showNotice('내보냈습니다.');
+    // 브라우저에 넘기는 것까지가 우리 몫이다. 실제로 저장됐는지는 알 수 없으므로
+    // 저장됐다고 단정하지 않는다.
+    showNotice('내려받기를 시작했습니다. 파일이 없으면 브라우저의 다운로드 목록을 확인해 주세요.');
   });
 
   importButton.addEventListener('click', () => {
     importFile.value = ''; // 같은 파일을 다시 골라도 change가 오게 한다
     importFile.click();
   });
-
-  /** 파일이 정해진 뒤, 덮어쓰기 전에 백업 여부를 묻는다. */
-  let pendingImport = null;
 
   importFile.addEventListener('change', async () => {
     const file = importFile.files?.[0];
@@ -1498,6 +1964,10 @@
     searchClear.hidden = true;
 
     renderTheme();
+    // 뽀모도로 회차 설정도 파일 것으로 갈렸다. 입력 칸을 되맞추지 않으면
+    // 화면에는 옛 숫자가 남고 실제로 도는 길이만 달라진다.
+    syncPomoSettings(true);
+    renderPomo();
     render();
     showNotice(`${result.todos}개를 가져왔습니다.`);
   });
@@ -1637,12 +2107,16 @@
     const digit = /^Digit([1-9])$/.exec(e.code);
     if (!digit) return;
 
-    const tab = tabs.children[Number(digit[1]) - 1];
-    if (!tab) return;
+    const at = Number(digit[1]) - 1;
+    const value = tabs.children[at]?.dataset.value;
+    if (value === undefined) return;
 
     e.preventDefault();
-    toggleCategory(tab.dataset.value);
-    tab.focus();
+    toggleCategory(value); // 렌더가 탭을 통째로 다시 세운다
+
+    // 위에서 집어둔 노드는 이미 떼어낸 죽은 노드라 focus()가 아무 일도 하지 않는다.
+    // 새로 그려진 같은 자리의 탭을 다시 집는다.
+    tabs.children[at]?.focus();
   });
 
   catForm.addEventListener('submit', (e) => {
@@ -1651,6 +2125,12 @@
     const name = catName.value.trim();
     if (!name) return;
 
+    // 개수가 찬 것은 저장 실패가 아니다. 먼저 걸러내지 않으면 addCategory가 준 null을
+    // saved()가 "저장하지 못했습니다"로 읽어, 멀쩡한 저장소를 탓하게 된다.
+    if (Store.getCategories().length >= Store.MAX_CATEGORIES) {
+      showCategoryError(`카테고리는 ${Store.MAX_CATEGORIES}개까지 만들 수 있습니다.`);
+      return;
+    }
     if (name.length > Store.MAX_CATEGORY_NAME) {
       showCategoryError(`이름은 ${Store.MAX_CATEGORY_NAME}자까지 씁니다.`);
       return;
@@ -1668,15 +2148,103 @@
   });
 
   catName.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.isComposing) e.preventDefault();
-    if (e.key === 'Escape') toggleCategoryPanel(false);
+    // 조합 중의 Enter는 IME가 글자를 확정하는 키다. 여기서 제출하면 두 번 들어간다.
+    // Escape도 마찬가지로 조합만 물러야 하므로 패널까지 닫지 않는다.
+    if (e.isComposing) {
+      if (e.key === 'Enter') e.preventDefault();
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.stopPropagation(); // catPanel까지 올라가면 toggleCategoryPanel이 두 번 불린다
+      toggleCategoryPanel(false);
+    }
   });
+
+  /**
+   * 이름을 그 자리에서 고친다. 할 일 제목과 같은 방식이다 —
+   * Enter로 넣고, Escape로 물리고, 다른 데를 누르면 넣는다.
+   */
+  function startCategoryRename(id) {
+    if (renamingCategory !== null) return;
+
+    const cat = Store.getCategories().find((c) => c.id === id);
+    const button = catList.querySelector(`[data-action="rename-category"][data-id="${CSS.escape(id)}"]`);
+    if (!cat || !button) return;
+
+    pendingCategoryRemove = null;
+    showCategoryError('');
+
+    const editor = el('input', 'cat-rename');
+    editor.type = 'text';
+    editor.value = cat.name;
+    editor.maxLength = Store.MAX_CATEGORY_NAME;
+    editor.setAttribute('aria-label', `카테고리 이름 수정: ${cat.name}`);
+
+    renamingCategory = id;
+    button.replaceWith(editor);
+    editor.focus();
+    editor.select();
+
+    /** byKey의 뜻은 할 일 제목 편집기와 같다. (startEdit, renderAfterPress 참고) */
+    const finish = (save, byKey) => {
+      if (renamingCategory !== id) return;
+      renamingCategory = null;
+
+      const name = editor.value.trim().replace(/\s+/g, ' ');
+
+      // 이름을 넣지 못한 이유는 말해준다. 조용히 옛 이름으로 돌아가면
+      // 왜 안 바뀌었는지 알 길이 없다.
+      if (save && name && name !== cat.name) {
+        if (name.length > Store.MAX_CATEGORY_NAME) {
+          showCategoryError(`이름은 ${Store.MAX_CATEGORY_NAME}자까지 씁니다.`);
+        } else if (Store.getCategories().some((c) => c.id !== id && c.name === name)) {
+          showCategoryError('같은 이름이 이미 있습니다.');
+        } else {
+          saved(Store.renameCategory(id, name));
+        }
+      }
+
+      if (!byKey) {
+        // 제목 편집기와 같은 이유로 여기서 편집기만 걷어낸다. (startEdit 참고)
+        const fresh = Store.getCategories().find((c) => c.id === id);
+        if (fresh) {
+          button.textContent = fresh.name;
+          button.setAttribute('aria-label', `카테고리 이름 바꾸기: ${fresh.name}`);
+        }
+        editor.replaceWith(button);
+
+        renderAfterPress();
+        return;
+      }
+      render();
+      catList
+        .querySelector(`[data-action="rename-category"][data-id="${CSS.escape(id)}"]`)
+        ?.focus();
+    };
+
+    editor.addEventListener('keydown', (e) => {
+      if (e.isComposing) return;
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finish(true, true);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation(); // 패널까지 닫아버리지 않는다
+        finish(false, true);
+      }
+    });
+    editor.addEventListener('focusout', () => finish(true, false));
+  }
 
   catList.addEventListener('click', (e) => {
     const trigger = e.target.closest('[data-action]');
     if (!trigger) return;
 
     switch (trigger.dataset.action) {
+      case 'rename-category':
+        startCategoryRename(trigger.dataset.id);
+        break;
+
       case 'remove-category':
         pendingCategoryRemove = trigger.dataset.id;
         showCategoryError('');
@@ -1684,10 +2252,19 @@
         catList.querySelector('[data-action="confirm-remove-category"]')?.focus();
         break;
 
-      case 'cancel-remove-category':
+      case 'cancel-remove-category': {
+        // 확인 줄이 통째로 사라지므로 갈 곳을 지정한다. 다른 두 갈래처럼
+        // 챙기지 않으면 포커스가 <body>로 떨어진다.
+        const back = pendingCategoryRemove;
         pendingCategoryRemove = null;
         renderCategoryPanel();
+        if (back) {
+          catList
+            .querySelector(`[data-action="remove-category"][data-id="${CSS.escape(back)}"]`)
+            ?.focus();
+        }
         break;
+      }
 
       case 'confirm-remove-category': {
         const id = trigger.dataset.id;
@@ -1707,7 +2284,8 @@
   });
 
   catPanel.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') toggleCategoryPanel(false);
+    // 조합 중의 Escape는 조합만 무른다. 패널까지 닫으면 치던 이름이 함께 사라진다.
+    if (e.key === 'Escape' && !e.isComposing) toggleCategoryPanel(false);
   });
 
   tagBar.addEventListener('click', (e) => {
@@ -1719,15 +2297,20 @@
    * 다른 탭이 저장하면 이 이벤트가 온다 (이 탭이 쓴 것에는 오지 않는다).
    * 곧바로 따라가야 이 탭의 상태가 낡은 채로 남아 있지 않는다.
    * key가 null이면 저장소 전체가 비워진 것이다.
+   *
+   * 다만 **이벤트마다 따라가지는 않는다.** 옆 탭에서 Alt+아래를 길게 누르면 초당
+   * 스물몇 번씩 들어오는데, 그때마다 통째로 다시 읽고 그리면 이 탭에서 고치던 제목과
+   * 되돌릴 수 있던 5초가 그 횟수만큼 날아간다. 플래그만 세우고 한 프레임에 한 번만 돈다.
    */
   addEventListener('storage', (e) => {
     if (e.key !== null && e.key !== Store.STORAGE_KEY) return;
-    adoptExternal();
+    queueAdopt();
   });
 
   Store.load();
   renderTheme();
   renderBanner();
+  restorePomoRun();
   renderPomo();
   render();
   input.focus();

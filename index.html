@@ -7,9 +7,36 @@
   <meta name="description" content="할 일을 실행 단위로 쪼개 관리하는 1인용 웹 앱. 2단계 계층, 우선순위 0~3, 태그와 검색, 진행률을 브라우저 안에서만 처리합니다.">
   <meta name="color-scheme" content="light dark">
   <link rel="stylesheet" href="styles.css">
+
+  <!-- 아이콘을 두지 않지만, 없다고 알려주지 않으면 브라우저가 /favicon.ico를 찾아가
+       img-src에 걸린다. 그 위반이 새로고침마다 콘솔에 쌓이면 진짜 오류가 묻힌다.
+       빈 data: 주소로 "찾을 것 없다"고 못박는다. -->
+  <link rel="icon" href="data:,">
+
+  <!--
+    이 앱은 밖으로 아무것도 보내지 않는다. 그것을 의도가 아니라 규칙으로 만든다.
+    connect-src 'none'이 핵심이다 — 나중에 누가 실수로 주입 구멍을 내더라도
+    데이터가 나갈 길이 없다. 인라인 스크립트도 style= 속성도 두지 않으므로
+    'unsafe-inline' 없이 걸 수 있다. 새 예외를 더하기 전에 정말 필요한지 따진다.
+    img-src의 data:는 위의 빈 아이콘 하나 때문이다. data: 주소는 네트워크를 타지 않아
+    이것으로 데이터가 밖으로 나갈 수는 없다.
+    frame-ancestors는 <meta>에서 동작하지 않아 뺐다 (헤더로만 걸린다).
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src data:; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+
+  <!--
+    고른 테마를 첫 페인트 전에 정한다. 스크립트가 본문 끝에서 돌면
+    OS 색으로 한 번 칠해진 뒤에 뒤집혀, 새로고침할 때마다 흰 화면이 번쩍인다.
+    데이터 계층만 미리 읽는다. 키를 아는 건 여전히 store.js뿐이다.
+  -->
+  <script src="store.js"></script>
+  <script src="theme.js"></script>
 </head>
 <body>
-  <div id="app">
+  <!-- 할 일 목록이 어느 랜드마크에도 속하지 않으면 보조 기술의 "본문으로 건너뛰기"가
+       걸릴 자리가 없다. header·nav·footer는 이미 있으므로 바깥을 main으로 세운다.
+       styles.css의 #app 선택자는 id 기준이라 그대로 걸린다. -->
+  <main id="app">
     <div id="banner" class="banner" role="status" hidden></div>
 
     <header class="header">
@@ -144,6 +171,7 @@
     <form id="add-form" class="add-form" autocomplete="off">
       <input id="add-input" class="add-input" type="text"
              placeholder="무엇을 해야 하나요?" aria-label="할 일 제목"
+             aria-describedby="add-hint"
              aria-keyshortcuts="Alt+N" title="Alt+N">
       <select id="add-category" class="add-category" aria-label="카테고리"></select>
       <select id="add-priority" class="add-priority" aria-label="우선순위 (0이 가장 높음)">
@@ -154,7 +182,9 @@
       </select>
       <button type="submit" class="add-button">추가</button>
     </form>
-    <p class="add-hint">!로 시작하면 우선순위 0, 끝에 #태그</p>
+    <!-- 입력창에 aria-describedby로 묶는다. 그러지 않으면 !와 # 문법이 화면에만 있고
+         스크린리더로는 알 길이 없다. -->
+    <p id="add-hint" class="add-hint">!로 시작하면 우선순위 0으로 추가되고, 끝에 #을 붙이면 태그가 됩니다.</p>
 
     <div class="search-row">
       <input id="search-input" class="search-input" type="text"
@@ -188,35 +218,43 @@
       <ul id="category-list" class="cat-list"></ul>
       <form id="category-add" class="cat-add" autocomplete="off">
         <input id="category-name" class="cat-input" type="text"
-               placeholder="새 카테고리 이름" aria-label="새 카테고리 이름">
+               placeholder="새 카테고리 이름" aria-label="새 카테고리 이름"
+               aria-describedby="category-error">
         <button type="submit" class="cat-add-button">추가</button>
       </form>
-      <p id="category-error" class="cat-error" hidden></p>
+      <!-- role="alert"이 없으면 "같은 이름이 이미 있습니다."가 화면에만 뜨고
+           스크린리더는 아무 말도 하지 않는다. 왜 추가가 안 됐는지 알 길이 없다. -->
+      <p id="category-error" class="cat-error" role="alert" hidden></p>
     </div>
 
     <ul id="todo-list" class="todo-list"></ul>
-    <p id="list-message" class="list-message" hidden></p>
+    <!-- 검색 결과가 0건이면 하필 남은 개수 배지까지 hidden이 되어 읽을 것이 하나도 없다.
+         role="status"로 이 문장만이라도 소리로 나가게 한다. -->
+    <p id="list-message" class="list-message" role="status" hidden></p>
 
     <footer class="footer">
       <button type="button" id="export-data" class="footer-button">내보내기</button>
       <button type="button" id="import-data" class="footer-button">가져오기</button>
       <input type="file" id="import-file" accept="application/json,.json" hidden>
     </footer>
-  </div>
+  </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <dialog id="help-dialog" class="dialog dialog-help" aria-labelledby="help-dialog-title">
     <h2 id="help-dialog-title" class="dialog-title">도움말</h2>
 
-    <div class="help-body">
+    <!-- 세로로 넘치는 영역이라 키보드로 굴려야 한다. tabindex가 없으면 브라우저에 따라
+         포커스를 못 받아 아래쪽 단축키 목록까지 닿을 방법이 사라진다.
+         styles.css의 .help-body:focus-visible 규칙이 이때를 위해 있다. -->
+    <div class="help-body" tabindex="0">
       <section class="help-section">
         <h3 class="help-heading">빠른 입력</h3>
         <dl class="help-list">
           <dt><code>!</code>로 시작</dt>
           <dd>우선순위 0으로 추가합니다. 우측에 선택된 우선순위에 관계 없이 추가됩니다.</dd>
           <dt><code>#</code> 입력</dt>
-          <dd>#으로 태그를 추가할 수 있습니다. 항목당 5개까지 추가할 수 있습니다.</dd>
+          <dd>제목 끝에 #을 붙이면 태그가 됩니다. 항목당 5개까지 추가할 수 있습니다.</dd>
           <dt><code>+</code> 버튼</dt>
           <dd>하위 할 일을 추가합니다.</dd>
         </dl>
@@ -233,14 +271,26 @@
       </section>
 
       <section class="help-section">
+        <h3 class="help-heading">카테고리</h3>
+        <dl class="help-list">
+          <dt>카테고리 배지</dt>
+          <dd>상위 할 일 우측에 있는 배지를 누르면 그 자리에서 카테고리를 고를 수 있습니다. 고르면 바로 바뀌고, Esc를 누르면 바뀌기 전으로 돌아갑니다.</dd>
+          <dt>하위 할 일</dt>
+          <dd>하위 할 일은 상위 할 일의 카테고리를 그대로 따릅니다. 상위를 바꾸면 하위도 함께 바뀝니다.</dd>
+          <dt>톱니바퀴</dt>
+          <dd>카테고리를 만들고 지웁니다. 이름을 누르면 그 자리에서 고칠 수 있습니다. 카테고리는 64개까지 만들 수 있습니다.</dd>
+        </dl>
+      </section>
+
+      <section class="help-section">
         <h3 class="help-heading">필터와 검색</h3>
         <dl class="help-list">
           <dt>카테고리 · 태그</dt>
-          <dd>한 번에 하나만 적용됩니다. 다른 것을 선택하면 이전 선택은 해제됩니다.</dd>
+          <dd>한 번에 하나만 적용됩니다. 다른 것을 선택하면 이전 선택은 해제됩니다. 선택한 태그가 없어지면 전체 목록으로 돌아오고, 그 사실을 화면 아래에서 알려줍니다.</dd>
           <dt>검색</dt>
           <dd>제목과 태그에서 함께 검색합니다. 카테고리나 태그 필터와 같이 사용할 수 있습니다.</dd>
           <dt>진행률</dt>
-          <dd>하위 할 일이 있는 항목은 진행률에서 제외됩니다. 하위 할 일만 계산합니다.</dd>
+          <dd>하위 할 일을 가진 항목은 진행률에서 빠지고, 하위가 없는 항목만 셉니다. 하위를 만들지 않았다면 모든 항목이 진행률에 들어갑니다.</dd>
         </dl>
       </section>
 
@@ -250,7 +300,7 @@
           <dt>정렬 기준</dt>
           <dd>우선순위, 직접 순서, 생성일, 카테고리, 완료 상태 중에서 선택할 수 있습니다.</dd>
           <dt>순서 변경</dt>
-          <dd>정렬 기준이 직접 순서일 때만 끌어서 옮길 수 있습니다. 같은 단계의 항목끼리만 이동합니다.</dd>
+          <dd>정렬 기준이 직접 순서일 때만 끌어서 옮길 수 있습니다. 상위 할 일은 상위 할 일끼리, 하위 할 일은 같은 상위에 속한 것끼리만 이동합니다. 마우스 없이 Alt와 위아래 화살표로도 옮길 수 있습니다.</dd>
         </dl>
       </section>
 
@@ -267,10 +317,12 @@
           <dd>회차마다 집중 시간과 휴식 시간을 바꿀 수 있습니다.</dd>
           <dt>펼치기 (화살표)</dt>
           <dd>원형 시계를 엽니다. 시간이 흐른 만큼 색이 채워집니다.</dd>
-          <dt>이 창 닫기</dt>
-          <dd>바깥을 누르거나 Esc를 누르면 닫힙니다.</dd>
+          <dt>타이머 닫기</dt>
+          <dd>타이머 안에 포커스가 있을 때 Esc를 누르면 닫힙니다. 설정이나 원형 시계가 열려 있으면 그것이 먼저 닫힙니다.</dd>
           <dt>진행 확인</dt>
           <dd>돌아가는 동안 브라우저 탭 제목에 남은 시간이 표시됩니다. 끝나면 소리로 알립니다.</dd>
+          <dt>새로고침</dt>
+          <dd>돌아가던 자리에서 이어집니다. 탭을 닫으면 사라집니다.</dd>
         </dl>
       </section>
 
@@ -322,7 +374,7 @@
   </dialog>
 
   <script src="parse.js"></script>
-  <script src="store.js"></script>
+  <!-- store.js는 테마를 먼저 읽으려고 <head>에서 이미 불렀다 -->
   <script src="app.js"></script>
 </body>
 </html>

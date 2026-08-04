@@ -13,6 +13,13 @@
   const MAX_TITLE = 100;
   const MAX_CATEGORY_NAME = 12;
 
+  /**
+   * 카테고리 개수 상한. 화면이 감당할 수를 한참 넘겨 잡은 값이지만, 상한이 아예 없으면
+   * 카테고리가 수십만 개인 파일 하나로 pickHue의 `Math.min(...used)`가 인자 개수 제한에
+   * 걸려 `RangeError`를 던지고 앱이 그 자리에서 멈춘다.
+   */
+  const MAX_CATEGORIES = 64;
+
   /** 0이 가장 높다. 숫자 자체가 순위라 정렬 가중치를 따로 둘 필요가 없다. */
   const PRIORITIES = [0, 1, 2, 3];
   const DEFAULT_PRIORITY = 1;
@@ -81,14 +88,25 @@
   let categories = defaultCategories();
   /** "light" | "dark" | null. null이면 OS 설정을 따른다. */
   let theme = null;
+  const validTheme = (value) => (value === 'light' || value === 'dark' ? value : null);
   /** 정렬 모드. 기본은 우선순위순 (F-06). */
   let sort = 'priority';
-  /** 뽀모도로 회차별 길이(분). 돌아가는 상태는 저장하지 않는다 — 설정만 남긴다. */
+  /**
+   * 뽀모도로 회차별 길이(분). **설정만** 여기 담는다.
+   * 돌아가는 상태는 이 블롭에 넣지 않는다 — saveRun/loadRun이 따로 맡는다.
+   */
   let pomodoro = defaultPomodoro();
   let corrupted = false;
 
   /** 마지막으로 읽거나 쓴 저장본의 판 번호. 다른 탭이 쓰면 여기서 벌어진다. */
   let rev = 0;
+  /**
+   * 판 번호가 없던 저장본의 원문. 판 번호를 넣기 전에 쓰인 v1·v2 블롭이 여기 해당한다.
+   * 비교할 판 번호가 없을 때는 **원문이 그대로인 것**이 "그 사이 아무도 쓰지 않았다"는
+   * 유일한 증거다. 이걸 들고 있지 않으면 둘 중 하나를 고르게 된다 — 그냥 덮어써서 남의
+   * 저장본을 날리거나, 전부 충돌로 보아 옛 저장본을 가진 사람이 영영 저장하지 못하거나.
+   */
+  let revlessRaw = null;
   /** 직전 저장 실패의 종류. "conflict"(다른 탭이 먼저 씀) | "save"(용량 등) | null */
   let lastError = null;
 
@@ -111,7 +129,39 @@
     }
   })();
 
-  const readRaw = () => (backend ? backend.getItem(STORAGE_KEY) : memoryBlob);
+  /** 읽기는 실패해도 던지지 않는다. 못 읽은 것을 없는 것으로 보아야 첫 페인트가 멈추지 않는다. */
+  const readRaw = () => {
+    if (!backend) return memoryBlob;
+    try {
+      return backend.getItem(STORAGE_KEY);
+    } catch (e) {
+      return null;
+    }
+  };
+
+  /**
+   * 돌아가는 뽀모도로는 **세션 저장소**에 따로 둔다. 저장 형식(`daily-todo:v1`)에
+   * 섞지 않는 이유가 셋 있다.
+   *
+   * 하나, 판 번호가 올라 다른 탭이 전부 다시 읽는다. 그 탭이 고치던 제목과
+   * 되돌릴 수 있던 5초가 타이머를 시작했다는 이유로 날아간다.
+   * 둘, 타이머는 탭마다 따로 도는 것이라 탭 사이에서 공유할 것이 아니다.
+   * 셋, 내보낸 파일에 끝나는 시각이 들어가면 남의 기기에서 이미 지난 시각이 된다.
+   *
+   * 세션 저장소는 새로고침을 넘기고 탭을 닫으면 사라진다. 필요한 만큼과 정확히 같다.
+   */
+  const RUN_KEY = STORAGE_KEY + ':run';
+
+  const runBackend = (() => {
+    try {
+      const probe = RUN_KEY + ':probe';
+      sessionStorage.setItem(probe, '1');
+      sessionStorage.removeItem(probe);
+      return sessionStorage;
+    } catch (e) {
+      return null; // 못 쓰면 새로고침에 사라진다. 예전과 같아질 뿐이다.
+    }
+  })();
 
   /** 쓰기 실패(QuotaExceededError 등)는 그대로 던진다. 롤백은 commit이 맡는다. */
   const writeRaw = (value) => {
@@ -121,6 +171,56 @@
     }
     backend.setItem(STORAGE_KEY, value);
   };
+
+  /**
+   * 손상된 저장본을 옆으로 옮기고 빈 목록으로 시작한다.
+   * 지우지 않는 이유는 사용자가 나중에 `:corrupted`에서 원본을 건져낼 수 있어야 하기 때문이다.
+   * 옮기기까지 실패하면 그냥 넘어간다 — 앱이 뜨는 것이 먼저다.
+   */
+  function quarantine(raw) {
+    corrupted = true;
+    try {
+      if (backend) {
+        backend.setItem(CORRUPTED_KEY, raw);
+        backend.removeItem(STORAGE_KEY);
+      } else {
+        memoryBlob = null;
+      }
+    } catch (e) {
+      /* 옮기지 못해도 앱은 계속 뜬다 */
+    }
+  }
+
+  /**
+   * 저장 블롭의 앞머리. `persist()`는 판 번호 하나 때문에, `peekTheme()`은 테마 하나 때문에
+   * 블롭을 통째로 파싱했다 — 항목 1000개(218KB)에서 `JSON.parse` 한 번이 1.79ms고,
+   * 그게 변경 한 번의 30%다. `peekTheme()`은 첫 페인트 **앞**이라 그만큼 화면이 늦게 뜬다.
+   * `persist()`가 늘 같은 순서로 쓰므로 앞머리는 고정이고, 맨 앞에 앵커를 걸어 두 값만 꺼낸다.
+   * 앵커가 없으면 할 일 제목 안에 든 `"rev":`에 잘못 걸린다.
+   */
+  const HEAD = /^\{"version":\d+,"rev":(\d+),"theme":(null|"light"|"dark"),/;
+
+  /**
+   * 저장본에서 판 번호와 테마만 꺼낸다. 앞머리로 먼저 읽고, 모양이 조금이라도 다르면
+   * (키 순서가 다르거나, 사람이 들여썼거나, 판 번호가 없는 v1·v2거나) 통째 파싱으로 물러난다.
+   * `rev`가 `null`이면 "읽지 못했다"는 뜻이다 — `0`과 구분해야 `persist()`가 물러날 자리를 안다.
+   */
+  function readHead(raw) {
+    const head = HEAD.exec(raw);
+    if (head) {
+      return { rev: Number(head[1]), theme: head[2] === 'null' ? null : head[2].slice(1, -1) };
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      return {
+        rev: Number.isFinite(parsed?.rev) ? parsed.rev : null,
+        theme: validTheme(parsed?.theme)
+      };
+    } catch (e) {
+      return { rev: null, theme: null };
+    }
+  }
 
   const newId = () =>
     crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -280,7 +380,7 @@
    * **같은 검증을 탄다** — 가져온 파일이 앱을 무너뜨릴 수 없다는 뜻이다.
    */
   function adopt(parsed) {
-    theme = parsed?.theme === 'light' || parsed?.theme === 'dark' ? parsed.theme : null;
+    theme = validTheme(parsed?.theme);
     sort = SORTS.includes(parsed?.sort) ? parsed.sort : 'priority';
     pomodoro = normalizePomodoro(parsed?.pomodoro);
 
@@ -308,18 +408,30 @@
   function normalizeCategories(list) {
     if (!Array.isArray(list)) return defaultCategories();
 
-    const seen = new Set();
+    const seenIds = new Set();
+    const seenNames = new Set();
     const out = [];
 
     for (const raw of list) {
+      // 상한을 넘긴 나머지는 읽지 않고 버린다. pickHue가 쓰는 자리 하나 때문에
+      // 카테고리가 수만 개인 파일이 앱을 멈춰 세울 수 있다.
+      if (out.length >= MAX_CATEGORIES) break;
       if (!raw || typeof raw !== 'object') continue;
-      if (typeof raw.id !== 'string' || !raw.id || seen.has(raw.id)) continue;
+      if (typeof raw.id !== 'string' || !raw.id || seenIds.has(raw.id)) continue;
       if (typeof raw.name !== 'string' || !raw.name.trim()) continue;
 
-      seen.add(raw.id);
+      // 이름은 목록 안에서 유일해야 한다 (PRD §5). 색은 자동으로 배정되므로 이름까지 같으면
+      // 배지만 보고는 어느 쪽인지 가릴 방법이 없다. addCategory·renameCategory가 막는 것을
+      // 로드·가져오기 경로도 똑같이 막는다. 자른 뒤의 이름으로 비교해야 12자 너머에서만
+      // 다른 이름이 화면에서 같아 보이는 것까지 걸린다.
+      const name = raw.name.trim().slice(0, MAX_CATEGORY_NAME);
+      if (seenNames.has(name)) continue;
+
+      seenIds.add(raw.id);
+      seenNames.add(name);
       out.push({
         id: raw.id,
-        name: raw.name.trim().slice(0, MAX_CATEGORY_NAME),
+        name,
         hue: Number.isFinite(raw.hue) ? (((raw.hue % 360) + 360) % 360) : 0
       });
     }
@@ -366,22 +478,47 @@
     return list;
   }
 
-  /** 3. 순환 참조 제거 (A→B→A, A→A) — 감지된 항목을 상위로 승격. */
+  /**
+   * 3. 순환 참조 제거 (A→B→A, A→A) — 감지된 항목을 상위로 승격.
+   *
+   * 항목마다 조상 사슬을 끝까지 걸어 올라가면 O(n²)이다. 한 줄로 이어진 5,000개에서 944ms,
+   * 20,000개에서 17.8초가 걸렸다. 가져오기는 클릭 핸들러 안에서 도는 동기 작업이라
+   * 그동안 탭 전체가 응답하지 않는다.
+   *
+   * 그래서 지나간 자리를 표시해 한 번의 순회로 끝낸다. 'walking'은 지금 걷는 사슬,
+   * 'done'은 이미 끝까지 확인한 사슬이다. 'walking'을 다시 만나면 그 자리가 순환이고,
+   * 'done'을 만나면 그 위는 볼 필요가 없다 — 순환이 있었다면 그때 이미 끊었다.
+   * 끊는 자리는 예전과 같다. 걷는 순서도, 순환을 만났을 때 누구의 parentId를 지우는지도
+   * 그대로라 어떤 항목이 상위로 올라오는지 바뀌지 않는다.
+   */
   function breakCycles(list) {
     const byId = new Map(list.map((t) => [t.id, t]));
+    const state = new Map();
+    const walked = [];
 
-    for (const item of list) {
-      const path = new Set([item.id]);
-      let cur = item;
+    for (const start of list) {
+      if (state.get(start.id) === 'done') continue;
 
-      while (cur.parentId && byId.has(cur.parentId)) {
-        if (path.has(cur.parentId)) {
-          cur.parentId = null;
+      walked.length = 0;
+      let cur = start;
+
+      for (;;) {
+        state.set(cur.id, 'walking');
+        walked.push(cur.id);
+
+        const parent = cur.parentId ? byId.get(cur.parentId) : null;
+        if (!parent) break; // 뿌리이거나 없는 부모를 가리킨다. 고아 승격이 이어서 맡는다.
+
+        const mark = state.get(parent.id);
+        if (mark === 'walking') {
+          cur.parentId = null; // 이번 걸음에서 지나온 자리로 되돌아왔다 = 순환
           break;
         }
-        path.add(cur.parentId);
-        cur = byId.get(cur.parentId);
+        if (mark === 'done') break;
+        cur = parent;
       }
+
+      for (const id of walked) state.set(id, 'done');
     }
     return list;
   }
@@ -452,17 +589,19 @@
   function persist() {
     lastError = null;
 
-    let stored = null;
-    try {
-      const raw = readRaw();
-      if (raw) stored = JSON.parse(raw);
-    } catch (e) {
-      stored = null; // 읽을 수 없는 값은 지켜줄 것이 없다
-    }
+    const raw = readRaw();
+    if (raw) {
+      const stored = readHead(raw);
 
-    if (stored && Number.isFinite(stored.rev) && stored.rev !== rev) {
-      lastError = 'conflict';
-      return false;
+      // 판 번호를 읽을 수 없으면 비교할 것이 없다. 그렇다고 지켜줄 것이 없다고 단정하면
+      // 남이 써둔 저장본을 그대로 덮는다. 우리가 load()에서 읽어온 그 원문일 때만 지나가고,
+      // 아니면 물러나 load()를 다시 타게 한다 — 손상된 저장본은 그 길에 :corrupted로 옮겨지고,
+      // 판 번호가 없는 옛 저장본은 다시 읽혀 그 다음 시도에서 통과한다.
+      const mine = stored.rev === null ? raw === revlessRaw : stored.rev === rev;
+      if (!mine) {
+        lastError = 'conflict';
+        return false;
+      }
     }
 
     const next = rev + 1;
@@ -484,6 +623,7 @@
     }
 
     rev = next;
+    revlessRaw = null; // 이제 저장소에 든 것은 판 번호가 박힌 우리 블롭이다
     return true;
   }
 
@@ -592,10 +732,65 @@
     PRIORITIES,
     MAX_TITLE,
     MAX_CATEGORY_NAME,
+    /** UI가 "더 만들 수 없습니다"를 저장 실패와 다르게 알릴 수 있도록 함께 내준다. */
+    MAX_CATEGORIES,
 
     /** localStorage를 쓰고 있는가. false면 메모리 폴백 중이라 탭을 닫으면 사라진다. */
     get isPersistent() {
       return backend !== null;
+    },
+
+    /**
+     * 돌아가는 뽀모도로를 세션 저장소에 남긴다 (F-22).
+     * 실패해도 조용히 넘어간다 — 타이머는 그대로 돌고, 새로고침에 사라질 뿐이다.
+     */
+    saveRun(run) {
+      if (!runBackend) return;
+      try {
+        runBackend.setItem(RUN_KEY, JSON.stringify(run));
+      } catch (e) {
+        /* 남기지 못해도 지금 돌아가는 타이머는 멀쩡하다 */
+      }
+    },
+
+    /**
+     * 남겨둔 뽀모도로를 돌려준다. 없거나 말이 안 되면 `null`이다.
+     * 저장본을 열 때와 같은 태도로 검사한다 — 세션 저장소도 사용자가 고칠 수 있다.
+     */
+    loadRun() {
+      if (!runBackend) return null;
+
+      let parsed;
+      try {
+        const raw = runBackend.getItem(RUN_KEY);
+        if (!raw) return null;
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        return null;
+      }
+      if (!parsed || typeof parsed !== 'object') return null;
+
+      const { length, left } = parsed;
+      if (!Number.isFinite(length) || !Number.isFinite(left)) return null;
+      if (length < POMO_MIN_MINUTES * 60 || length > POMO_MAX_MINUTES * 60) return null;
+      if (left < 0 || left > length) return null;
+
+      // 돌아가는 중이면 끝나는 시각이 있고, 멈춰 있으면 없다.
+      if (parsed.endsAt !== null && !Number.isFinite(parsed.endsAt)) return null;
+
+      // 회차가 망가졌으면 사이클에서 빼고 단일 타이머로 되살린다.
+      const round =
+        Number.isInteger(parsed.round) && parsed.round >= 0 && parsed.round < POMO_ROUNDS
+          ? parsed.round
+          : null;
+
+      return {
+        endsAt: parsed.endsAt ?? null,
+        left,
+        length,
+        round,
+        phase: parsed.phase === 'rest' ? 'rest' : 'focus'
+      };
     },
 
     /** 직전 load()에서 손상된 데이터를 발견했는가. */
@@ -614,6 +809,20 @@
     /** 사용자가 고른 테마. null이면 OS 설정을 따른다는 뜻이다. */
     getTheme() {
       return theme;
+    },
+
+    /**
+     * 저장된 테마만 훔쳐본다. load()보다 먼저, 첫 페인트 전에 불린다.
+     * 고른 테마가 OS 설정과 다르면 화면이 한 번 반대 색으로 칠해졌다가 뒤집히기 때문이다.
+     * 여기서 load()를 부르면 안 된다 — 손상 데이터를 치워버려서
+     * 나중에 app.js가 알림을 띄울 기회를 잃는다. 상태를 하나도 건드리지 않는다.
+     *
+     * 앞머리만 읽는 것도 첫 페인트를 막고 서 있기 때문이다. 테마 한 글자 때문에
+     * 항목 전부를 파싱할 이유가 없다. 모양이 다르면 readHead가 통째 파싱으로 물러난다.
+     */
+    peekTheme() {
+      const raw = readRaw();
+      return raw ? readHead(raw).theme : null;
     },
 
     setTheme(next) {
@@ -700,9 +909,20 @@
      * 로드와 **같은 검증 파이프라인**을 태우므로 깨진 파일도 앱을 무너뜨리지 않는다.
      */
     importData(raw) {
-      if (!raw || typeof raw !== 'object') return null;
+      // todos 배열이 없으면 우리 형식이 아니다 (PRD §8). app.js가 앞에서 한 번 걸러내지만,
+      // 가져온 파일이 앱을 무너뜨릴 수 없어야 하는 책임은 이 파이프라인에 있다.
+      // 이 검사가 없으면 `{}`나 `[]`가 그대로 지나가 기존 데이터를 지우고 성공을 보고한다.
+      if (!raw || typeof raw !== 'object' || !Array.isArray(raw.todos)) return null;
 
-      const snapshot = { todos, categories, theme, sort };
+      // adopt는 저장 이전에 상태를 통째로 갈아치운다. 되돌릴 것을 전부 쥐고 들어가야 한다 —
+      // 하나라도 빠지면 "되돌렸습니다"라고 알리면서 그 값만 가져온 파일 것으로 남는다.
+      const snapshot = {
+        todos,
+        categories,
+        theme,
+        sort,
+        pomodoro: pomodoro.map((r) => ({ ...r }))
+      };
       adopt(raw);
 
       const result = commit(() => ({
@@ -716,6 +936,7 @@
         categories = snapshot.categories;
         theme = snapshot.theme;
         sort = snapshot.sort;
+        pomodoro = snapshot.pomodoro;
         invalidate();
       }
       return result;
@@ -748,6 +969,7 @@
       corrupted = false;
       lastError = null;
       rev = 0;
+      revlessRaw = null;
       todos = [];
       invalidate();
       categories = defaultCategories();
@@ -763,22 +985,24 @@
         parsed = JSON.parse(raw);
       } catch (e) {
         // 손상된 데이터는 버리지 않고 옆으로 옮긴다. 빈 목록으로 시작한다.
-        corrupted = true;
-        try {
-          if (backend) {
-            backend.setItem(CORRUPTED_KEY, raw);
-            backend.removeItem(STORAGE_KEY);
-          } else {
-            memoryBlob = null;
-          }
-        } catch (_) {
-          /* 옮기지 못해도 앱은 계속 뜬다 */
-        }
+        quarantine(raw);
+        return todos;
+      }
+
+      // 파싱은 되는데 우리 형식이 아닌 것도 손상이다. 여기서 그냥 빈 목록으로 시작하면
+      // 배너도 백업도 없이 멀쩡한 새 앱처럼 보이고, 원본은 저장소에 그대로 남아 있다가
+      // 사용자가 항목 하나를 추가하는 순간 예고 없이 덮여 영영 사라진다.
+      // 손상 배너와 :corrupted 백업이 있는 이유가 정확히 이 상황이다.
+      if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.todos)) {
+        quarantine(raw);
         return todos;
       }
 
       // 판 번호는 adopt 밖에서 다룬다 — 가져온 파일에는 없는 값이다
-      rev = Number.isFinite(parsed?.rev) ? parsed.rev : 0;
+      const stamped = Number.isFinite(parsed.rev);
+      rev = stamped ? parsed.rev : 0;
+      // 판 번호가 없는 저장본은 원문을 쥐고 있어야 persist가 우리 것과 남의 것을 가른다
+      revlessRaw = stamped ? null : raw;
 
       adopt(parsed);
       return todos;
@@ -804,11 +1028,33 @@
       const label = typeof name === 'string' ? name.trim().replace(/\s+/g, ' ') : '';
       if (!label || label.length > MAX_CATEGORY_NAME) return null;
       if (categories.some((c) => c.name === label)) return null; // 같은 이름은 구분이 안 된다
+      // 로드가 상한 너머를 잘라내므로 여기서도 같은 자리에서 멈춘다.
+      // 더 만들 수 있게 두면 다음에 앱을 열 때 예고 없이 사라지고 항목만 남는다.
+      if (categories.length >= MAX_CATEGORIES) return null;
 
       return commit(() => {
         const category = { id: newId(), name: label, hue: pickHue() };
         categories.push(category);
         return category;
+      });
+    },
+
+    /**
+     * 카테고리 이름 변경. 검사는 addCategory와 똑같이 건다.
+     * 항목은 id로 카테고리를 가리키므로 이름만 갈아 끼우면 되고, 손댈 것이 없다.
+     */
+    renameCategory(id, name) {
+      if (!hasCategory(id)) return null;
+
+      const label = typeof name === 'string' ? name.trim().replace(/\s+/g, ' ') : '';
+      if (!label || label.length > MAX_CATEGORY_NAME) return null;
+      // 자기 이름 그대로면 통과시킨다. 다른 카테고리와 겹치는 것만 막는다.
+      if (categories.some((c) => c.id !== id && c.name === label)) return null;
+
+      return commit(() => {
+        const category = categories.find((c) => c.id === id);
+        category.name = label;
+        return { ...category };
       });
     },
 
@@ -891,6 +1137,10 @@
       }
       if (patch.category !== undefined) {
         if (!hasCategory(patch.category)) return null;
+        // 하위는 상위의 카테고리를 상속한다 (F-08). 하위만 따로 바꿔주면 countInCategory는
+        // 그 카테고리로 세는데 카테고리 필터는 상위 기준이라 걸리지 않고, 다음 로드에서
+        // renumber가 상위 값으로 조용히 되돌린다. 하위의 카테고리는 상위를 통해서만 바뀐다.
+        if (item.parentId !== null) return null;
         next.category = patch.category;
       }
       if (patch.priority !== undefined) {
@@ -904,8 +1154,9 @@
       return commit(() => {
         Object.assign(item, next);
 
-        // 상위 카테고리를 바꾸면 하위도 따라간다 (F-03)
-        if (next.category !== undefined && item.parentId === null) {
+        // 상위 카테고리를 바꾸면 하위도 따라간다 (F-03).
+        // 여기까지 오는 것은 상위뿐이다 — 하위의 카테고리 변경은 위에서 이미 거절했다.
+        if (next.category !== undefined) {
           for (const child of childrenOf(item.id)) child.category = next.category;
         }
         return item;
@@ -944,6 +1195,11 @@
         todos.push(...revived);
         invalidate();
 
+        // 여기서부터 아래 교정이 끝나기 전에는 색인을 읽는 호출을 끼워 넣으면 안 된다.
+        // invalidate()는 색인을 버릴 뿐이고 다시 만드는 것은 첫 조회다. 교정 앞에서 조회가
+        // 한 번이라도 일어나면 없는 부모를 가리키는 채로 색인이 굳어, 승격된 항목이 상위
+        // 그룹에 들어오지 못하고 사라진 부모 밑에 매달린 채로 남는다.
+        //
         // 그 사이 부모가 사라졌다면 상위로 승격한다
         const ids = new Set(todos.map((t) => t.id));
         for (const item of revived) {
@@ -1013,10 +1269,15 @@
     /** 현재 필터에 보이는 항목들이 쓰고 있는 태그와 그 미완료 개수. */
     getAllTags(filter) {
       const f = normalizeFilter(filter);
+
+      // 태그 바는 옮겨 다니는 수단이다. 태그 축까지 걸어서 세면 고른 태그 하나만 남아
+      // 다른 태그로 건너갈 길이 사라진다. 그래서 태그 축은 빼고 센다.
+      // 카테고리와 검색어는 그대로 둔다 — 그건 지금 보고 있는 범위 자체다.
+      const scope = f.type === 'tag' ? { type: 'all', query: f.query } : f;
       const counts = new Map();
 
       for (const item of todos) {
-        if (!isVisible(item, f)) continue;
+        if (!isVisible(item, scope)) continue;
         for (const tag of item.tags) {
           const open = counts.get(tag) ?? 0;
           counts.set(tag, open + (item.completed ? 0 : 1));

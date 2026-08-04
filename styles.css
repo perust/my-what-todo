@@ -10,8 +10,21 @@
   --surface: light-dark(#ffffff, #1c1c20);
   --border: light-dark(#e4e4e7, #2e2e34);
   --text: light-dark(#18181b, #ececee);
-  --text-dim: light-dark(#8b8b93, #86868d);
-  --focus: light-dark(#2f6feb, #6c9bff);
+  /* 이 색을 쓰는 자리가 전부 11~15px이라 큰 글자 예외에 들지 않고, 완료 처리한 할 일은
+     제목 전체가 이 색이라 가장 많이 읽히는 글이 가장 흐렸다. 양쪽 다 WCAG AA(4.5:1)에
+     못 미쳐 밝기만 옮겼다 — 라이트는 #8b8b93에서 내리고 다크는 #86868d에서 올렸다.
+
+     평면 배경만 재면 다크는 통과한 것처럼 보인다(#86868d가 --bg 위 5.13, --surface 위 4.70).
+     하지만 이 색은 틴트 위에도 얹힌다. 태그 알약(.tag, --text 7%)에서 3.92,
+     완료한 할 일 제목의 hover(--todo-title:hover, --text 6%)에서 4.04로 떨어졌다.
+     다크는 --surface 위 여유가 0.2밖에 없어 어떤 틴트를 올려도 기준 아래로 내려간다.
+     틴트를 낮추는 건 답이 아니다 — 다크에서 태그 알약이 배경에 묻혀 사라진다.
+     #919198이면 7% 4.53, 6% 4.66, --surface 5.43, --bg 5.92로 네 자리가 함께 통과한다. */
+  --text-dim: light-dark(#6b6b73, #919198);
+  /* 라이트 쪽은 원래 #2f6feb였는데, 같은 색을 14% 틴트 위에 얹는 .remaining 배지가
+     3.55로 미달했다. 색조는 그대로 두고 OKLCh 밝기만 0.573에서 0.489로 내려
+     틴트 위에서도 4.93 아래로 내려가지 않는다. 다크는 5.02가 최저라 그대로 둔다. */
+  --focus: light-dark(#1554ce, #6c9bff);
   /* 토마토는 알아보는 게 목적이라 팔레트 밖 색을 하나 쓴다 (F-22) */
   --tomato: light-dark(#d6392b, #ff6f5e);
 
@@ -326,9 +339,12 @@ body {
   color: var(--focus);
 }
 
-/* 휴식 중에는 패널과 같은 색으로 맞춘다 */
+/* 휴식 중에는 패널과 같은 색으로 맞춘다.
+   라이트 쪽은 원래 #0f8a63이었는데 12~14% 틴트 위에서 3.47~3.63으로 AA에 못 미쳤다.
+   파란 --focus와 같은 요령으로 색조는 두고 OKLCh 밝기만 0.562에서 0.47로 내렸다.
+   다크는 6.85가 최저라 그대로 둔다. */
 .pomo-button.is-rest {
-  --focus: light-dark(#0f8a63, #57d3a4);
+  --focus: light-dark(#006c4c, #57d3a4);
 }
 
 .pomo {
@@ -347,9 +363,9 @@ body {
   border-color: color-mix(in srgb, var(--focus) 45%, var(--border));
 }
 
-/* 휴식은 다른 상태다. 색조를 돌려 한눈에 갈라 보이게 한다. */
+/* 휴식은 다른 상태다. 색조를 돌려 한눈에 갈라 보이게 한다. 값은 .pomo-button.is-rest와 같다. */
 .pomo.is-rest {
-  --focus: light-dark(#0f8a63, #57d3a4);
+  --focus: light-dark(#006c4c, #57d3a4);
 }
 
 .pomo-main,
@@ -520,10 +536,12 @@ body {
   stroke: color-mix(in srgb, var(--text) 12%, transparent);
 }
 
-/* 흐른 만큼 채워진다. 남은 시간이 아니라 지나간 시간을 그린다. */
+/* 흐른 만큼 채워진다. 남은 시간이 아니라 지나간 시간을 그린다.
+   전환 시간은 갱신 주기와 같은 1초여야 한다. 짧게 주면 그만큼만 움직이고
+   나머지 시간은 멈춰 있어, 이어서 흐르지 않고 초마다 뚝뚝 끊겨 보인다. */
 .pomo-dial-fill {
   stroke: var(--focus);
-  transition: stroke-dashoffset 0.25s linear;
+  transition: stroke-dashoffset 1s linear;
 }
 
 .pomo-dial-label {
@@ -911,10 +929,36 @@ body {
   background: var(--cat);
 }
 
+/* 눌러서 이름을 고친다. 할 일 제목과 같은 생김새·같은 반응으로 맞춘다. */
 .cat-name {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
   font-size: 14px;
   font-weight: 500;
+  text-align: left;
+  cursor: text;
   overflow-wrap: anywhere;
+}
+
+.cat-name:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.cat-rename {
+  min-width: 0;
+  flex: 1;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--focus);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
 }
 
 .cat-count {
@@ -1102,9 +1146,10 @@ body {
   color: var(--focus);
 }
 
+/* opacity로 흐리게 하지 않는다. 0.7을 겹치면 칩 색이 라이트 2.21·다크 2.99까지 떨어져
+   양쪽 테마 모두 WCAG AA에 못 미쳤다. 칩 글자와 같은 색을 쓰고 크기로만 구분한다. */
 .tag-count {
   font-size: 11px;
-  opacity: 0.7;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1384,11 +1429,25 @@ body {
 
 /* ── 카테고리 배지 — 색만으로 구분하지 않고 라벨을 함께 쓴다 (F-08) ── */
 
-/* --cat-hue는 app.js가 항목마다 넣어준다. 채도·명도는 테마마다 여기서 한 번만 정한다. */
+/* --cat-hue는 app.js가 항목마다 넣어준다. 채도·명도는 테마마다 여기서 한 번만 정한다.
+
+   밝기는 hsl이 아니라 OKLCh로 못박는다. hsl은 명도를 40%로 똑같이 줘도 색조마다
+   휘도가 크게 달라, 파랑 배지는 라이트에서 대비 5.97이 나오는데 초록·노랑 배지는
+   2.3까지 떨어졌다. 색조를 5도 간격으로 전부 훑으면 라이트에서 절반이 4.5:1에 못 미쳤다.
+   OKLCh의 L은 색조와 무관하게 균일해 한 값으로 전 색조가 함께 통과한다.
+
+   색조는 여전히 hsl에서 물려받는다 — 상대 색상 문법(oklch(from ...) 안의 c·h)이
+   원본 색의 채도와 색조를 그대로 넘겨주기 때문이다. hsl의 각도와 OKLCh의 각도는
+   같은 숫자라도 다른 색이라, --cat-hue를 oklch()에 바로 넣으면 업무(221)가 청록이
+   되고 공부(262)가 파랑이 되어 두 카테고리가 서로 붙어버린다.
+   데이터에는 여전히 hue 하나만 남는다. */
 .badge,
 .cat-dot {
   --cat-hue: 0;
-  --cat: light-dark(hsl(var(--cat-hue) 68% 40%), hsl(var(--cat-hue) 85% 74%));
+  --cat: light-dark(
+    oklch(from hsl(var(--cat-hue) 68% 40%) 0.45 c h),
+    oklch(from hsl(var(--cat-hue) 85% 74%) 0.76 c h)
+  );
 }
 
 .badge {
@@ -1399,10 +1458,41 @@ body {
   font-weight: 600;
   white-space: nowrap;
   color: var(--cat);
+  /* span일 때도 button일 때도 같은 생김새여야 한다. 문맥 행에서는 span이라
+     누를 수 없고, 그 밖에는 눌러서 소속을 바꾼다. */
+  border: 0;
+  font-family: inherit;
+  /* 바탕은 --cat에서 바로 뽑는다. 같은 색을 두 번 적어두면 한쪽만 고쳤을 때
+     글자와 바탕의 색조가 어긋나고, 어긋났다는 사실이 화면에 잘 드러나지 않는다. */
   background: light-dark(
-    hsl(var(--cat-hue) 68% 40% / 12%),
-    hsl(var(--cat-hue) 85% 74% / 18%)
+    color-mix(in srgb, var(--cat) 12%, transparent),
+    color-mix(in srgb, var(--cat) 18%, transparent)
   );
+}
+
+/* 누를 수 있다는 것은 커서로 알린다. 색을 더 늘리지 않는다. */
+button.badge {
+  cursor: pointer;
+}
+
+button.badge:hover {
+  outline: 1px solid var(--cat);
+  outline-offset: 1px;
+}
+
+/* 배지 자리에 그대로 들어앉는다. 줄 높이가 바뀌면 목록 전체가 출렁인다. */
+.badge-select {
+  flex: none;
+  max-width: 140px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--focus);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* ── 문맥 행 — 보여주기만 한다 ──────────────────────── */
@@ -1730,5 +1820,26 @@ body {
 
   .todo:focus-within .tag-more-narrow {
     display: none;
+  }
+}
+
+/* 모션을 줄여달라고 한 사람에게는 줄인다.
+
+   값마다 찾아 끄지 않고 전부 한 번에 끈다. 새로 붙인 전환을 여기 적는 걸 잊으면
+   그 하나만 계속 움직이는데, 잊었다는 사실은 그 설정을 켠 사람만 알게 된다.
+   그래서 이 파일에서 `!important`는 여기 한 곳뿐이다 — 어느 규칙보다 뒤에 서야
+   구조적으로 빠짐이 없다.
+
+   0으로 두지 않고 아주 짧게 남기는 이유는, 전환이 끝났을 때 도는 코드가
+   `transition: none`에서는 영영 불리지 않기 때문이다. 지금은 그런 코드가 없지만
+   나중에 붙어도 멈추지 않는다. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
   }
 }
