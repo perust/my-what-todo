@@ -16,9 +16,39 @@
   let handle = null;
   let tail = Promise.resolve();
   let onError = () => {};
+  let onStatus = () => {};
   let pendingConnection = null;
+  let phase = 'disconnected';
+  let fileName = null;
+  let lastSavedAt = null;
 
   const serialize = (snapshot) => JSON.stringify(snapshot, null, 2);
+
+  function getState() {
+    return Object.freeze({ phase, fileName, lastSavedAt });
+  }
+
+  function publish(nextPhase, nextFileName = fileName, nextLastSavedAt = lastSavedAt) {
+    if (
+      phase === nextPhase &&
+      fileName === nextFileName &&
+      lastSavedAt === nextLastSavedAt
+    ) return;
+
+    phase = nextPhase;
+    fileName = nextFileName;
+    lastSavedAt = nextLastSavedAt;
+    try {
+      onStatus(getState());
+    } catch (ignored) {
+      // 상태 표시 코드의 실패가 파일 저장을 끊어서는 안 된다.
+    }
+  }
+
+  const safeFileName = (candidate) =>
+    typeof candidate?.name === 'string' && candidate.name.trim()
+      ? candidate.name
+      : PICKER_OPTIONS.suggestedName;
 
   function report(error) {
     try {
@@ -33,6 +63,7 @@
     try {
       await writable.write(text);
       await writable.close();
+      return Date.now();
     } catch (error) {
       try {
         await writable.abort?.();
@@ -69,12 +100,14 @@
       }
     };
     pendingConnection = pending;
+    publish('connecting');
 
     let candidate;
     try {
       candidate = await globalThis.showSaveFilePicker(PICKER_OPTIONS);
     } catch (error) {
       pending.finish(false);
+      publish(handle === null ? 'disconnected' : 'connected');
       if (error?.name === 'AbortError') return 'cancelled';
       report(error);
       return 'error';
@@ -93,15 +126,17 @@
       while (true) {
         const version = pending.version;
         const text = pending.latestText;
-        await enqueue(candidate, text);
+        const savedAt = await enqueue(candidate, text);
         if (pending.version === version) {
           handle = candidate;
+          publish('connected', safeFileName(candidate), savedAt);
           pending.finish(true);
           return 'connected';
         }
       }
     } catch (error) {
       pending.finish(false);
+      publish(handle === null ? 'disconnected' : 'connected');
       report(error);
       return 'error';
     }
@@ -131,7 +166,11 @@
 
     // 재연결 중에도 기존 연결에는 계속 저장한다. 후보 실패 시에도 최신 상태가 남는다.
     return enqueue(currentHandle, text).then(
-      () => true,
+      (savedAt) => {
+        // 재연결이 먼저 성공했다면 뒤늦게 끝난 옛 핸들의 저장 시각으로 역행하지 않는다.
+        if (handle === currentHandle) publish(phase, fileName, savedAt);
+        return true;
+      },
       (error) => {
         report(error);
         return false;
@@ -143,5 +182,16 @@
     onError = typeof handler === 'function' ? handler : () => {};
   }
 
-  globalThis.FileSync = Object.freeze({ connect, save, isSupported, setErrorHandler });
+  function setStatusHandler(handler) {
+    onStatus = typeof handler === 'function' ? handler : () => {};
+    try {
+      onStatus(getState());
+    } catch (ignored) {
+      // 등록 직후 렌더 실패도 저장 기능과 분리한다.
+    }
+  }
+
+  globalThis.FileSync = Object.freeze({
+    connect, save, isSupported, getState, setErrorHandler, setStatusHandler
+  });
 })();

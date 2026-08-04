@@ -7,8 +7,11 @@ const vm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '..');
 
-function loadFileSync({ picker, onError } = {}) {
-  const sandbox = { console };
+function loadFileSync({ picker, onError, now = 1_700_000_000_000 } = {}) {
+  class TestDate extends Date {
+    static now() { return typeof now === 'function' ? now() : now; }
+  }
+  const sandbox = { console, Date: TestDate };
   if (picker) sandbox.showSaveFilePicker = picker;
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
@@ -21,6 +24,7 @@ function loadFileSync({ picker, onError } = {}) {
 
 function writableHandle(writes, hooks = {}) {
   return {
+    name: hooks.name ?? 'my-what-todo.json',
     async createWritable() {
       hooks.onCreate?.();
       return {
@@ -34,6 +38,102 @@ function writableHandle(writes, hooks = {}) {
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
+
+test('초기 상태는 외부에서 바꿀 수 없는 disconnected 스냅샷이다', () => {
+  const FileSync = loadFileSync();
+  const first = FileSync.getState();
+  assert.deepEqual({ ...first }, { phase: 'disconnected', fileName: null, lastSavedAt: null });
+  assert.equal(Object.isFrozen(first), true);
+  assert.throws(() => { first.phase = 'connected'; }, TypeError);
+  assert.notEqual(FileSync.getState(), first);
+  assert.equal(FileSync.getState().phase, 'disconnected');
+});
+
+test('연결 중 상태를 알리고 initial write+close 성공 뒤 실제 이름과 시각을 공개한다', async () => {
+  const writes = [];
+  let releasePicker;
+  const pickerGate = new Promise((resolve) => { releasePicker = resolve; });
+  const handle = writableHandle(writes, { name: '오늘 할 일.json' });
+  const FileSync = loadFileSync({ picker: async () => { await pickerGate; return handle; }, now: 1_234 });
+  const states = [];
+  FileSync.setStatusHandler((state) => states.push({ ...state }));
+  const connecting = FileSync.connect(() => ({ step: 0 }));
+  assert.equal(FileSync.getState().phase, 'connecting');
+  releasePicker();
+  assert.equal(await connecting, 'connected');
+  assert.deepEqual({ ...FileSync.getState() }, {
+    phase: 'connected', fileName: '오늘 할 일.json', lastSavedAt: 1_234
+  });
+  assert.deepEqual(states.map((state) => state.phase), ['disconnected', 'connecting', 'connected']);
+});
+
+test('일반 save는 write+close 성공 뒤에만 마지막 성공 저장 시각을 갱신한다', async () => {
+  let now = 100;
+  const FileSync = loadFileSync({ picker: async () => writableHandle([]), now: () => now });
+  await FileSync.connect(() => ({ step: 0 }));
+  now = 200;
+  assert.equal(await FileSync.save({ step: 1 }), true);
+  assert.equal(FileSync.getState().lastSavedAt, 200);
+});
+
+test('save 실패는 기존 마지막 성공 저장 시각을 바꾸지 않는다', async () => {
+  let now = 100;
+  let fail = false;
+  const handle = {
+    name: 'kept.json',
+    async createWritable() {
+      return { async write() {}, async close() { if (fail) throw new Error('failed'); }, async abort() {} };
+    }
+  };
+  const FileSync = loadFileSync({ picker: async () => handle, now: () => now });
+  await FileSync.connect(() => ({ step: 0 }));
+  now = 200;
+  fail = true;
+  assert.equal(await FileSync.save({ step: 1 }), false);
+  assert.deepEqual({ ...FileSync.getState() }, {
+    phase: 'connected', fileName: 'kept.json', lastSavedAt: 100
+  });
+});
+
+test('취소한 재연결은 기존 파일 이름과 마지막 성공 시각으로 복귀한다', async () => {
+  const original = writableHandle([], { name: 'original.json' });
+  let cancel = false;
+  const FileSync = loadFileSync({
+    picker: async () => {
+      if (cancel) throw Object.assign(new Error('cancelled'), { name: 'AbortError' });
+      return original;
+    }, now: 300
+  });
+  await FileSync.connect(() => ({ step: 0 }));
+  cancel = true;
+  assert.equal(await FileSync.connect(() => ({ step: 1 })), 'cancelled');
+  assert.deepEqual({ ...FileSync.getState() }, {
+    phase: 'connected', fileName: 'original.json', lastSavedAt: 300
+  });
+});
+
+test('후보 쓰기에 실패한 재연결은 기존 파일 이름과 마지막 성공 시각으로 복귀한다', async () => {
+  const original = writableHandle([], { name: 'original.json' });
+  const broken = { name: 'broken.json', async createWritable() { throw new Error('candidate failed'); } };
+  let picked = original;
+  const FileSync = loadFileSync({ picker: async () => picked, now: 400 });
+  await FileSync.connect(() => ({ step: 0 }));
+  picked = broken;
+  assert.equal(await FileSync.connect(() => ({ step: 1 })), 'error');
+  assert.deepEqual({ ...FileSync.getState() }, {
+    phase: 'connected', fileName: 'original.json', lastSavedAt: 400
+  });
+});
+
+test('비거나 문자열이 아닌 handle.name은 안전한 기본 파일명으로 바꾼다', async () => {
+  for (const unsafeName of ['', null, 42]) {
+    const handle = writableHandle([]);
+    handle.name = unsafeName;
+    const FileSync = loadFileSync({ picker: async () => handle });
+    await FileSync.connect(() => ({}));
+    assert.equal(FileSync.getState().fileName, 'my-what-todo.json');
+  }
+});
 
 test('연결은 JSON picker 옵션을 주고 현재 스냅샷을 들여쓰기 JSON으로 즉시 쓴다', async () => {
   const writes = [];
@@ -106,6 +206,9 @@ test('첫 연결 실패 시 연결 중 save도 false로 완료된다', async () 
 
   assert.equal(await connecting, 'error');
   assert.equal(await saving, false);
+  assert.deepEqual({ ...FileSync.getState() }, {
+    phase: 'disconnected', fileName: null, lastSavedAt: null
+  });
 });
 
 test('picker 취소는 조용히 끝나고 기존 연결을 유지한다', async () => {
@@ -302,6 +405,169 @@ test('onError가 throw해도 실패를 흡수하고 다음 save 큐를 복구한
   fail = false;
   assert.equal(await FileSync.save({ step: 2 }), true);
   assert.equal(writes.at(-1), JSON.stringify({ step: 2 }, null, 2));
+});
+
+test('재연결 후보 close 실패 뒤에도 기존 handle 저장의 새 성공 시각을 보존한다', async () => {
+  let now = 100;
+  let releaseOriginalClose;
+  let originalCloseCount = 0;
+  const originalCloseGate = new Promise((resolve) => { releaseOriginalClose = resolve; });
+  const original = {
+    name: 'original.json',
+    async createWritable() {
+      return {
+        async write() {},
+        async close() {
+          originalCloseCount += 1;
+          if (originalCloseCount === 2) await originalCloseGate;
+        }
+      };
+    }
+  };
+  let candidateCloseStarted = false;
+  let releaseCandidateClose;
+  const candidateCloseGate = new Promise((resolve) => { releaseCandidateClose = resolve; });
+  const candidate = {
+    name: 'candidate.json',
+    async createWritable() {
+      return {
+        async write() {},
+        async close() {
+          candidateCloseStarted = true;
+          await candidateCloseGate;
+          throw new Error('candidate close failed');
+        },
+        async abort() {}
+      };
+    }
+  };
+  let releasePicker;
+  let picked = original;
+  const FileSync = loadFileSync({
+    picker: async () => {
+      if (picked === original) return original;
+      await new Promise((resolve) => { releasePicker = resolve; });
+      return candidate;
+    },
+    now: () => now
+  });
+  assert.equal(await FileSync.connect(() => ({ step: 0 })), 'connected');
+
+  picked = candidate;
+  const reconnecting = FileSync.connect(() => ({ step: 1 }));
+  while (!releasePicker) await new Promise((resolve) => setImmediate(resolve));
+  now = 200;
+  const saving = FileSync.save({ step: 2 });
+  releasePicker();
+  releaseOriginalClose();
+  assert.equal(await saving, true);
+  assert.equal(FileSync.getState().lastSavedAt, 200);
+
+  while (!candidateCloseStarted) await new Promise((resolve) => setImmediate(resolve));
+  releaseCandidateClose();
+  assert.equal(await reconnecting, 'error');
+  assert.deepEqual({ ...FileSync.getState() }, {
+    phase: 'connected', fileName: 'original.json', lastSavedAt: 200
+  });
+});
+
+test('연속 save는 close 성공 시각만 순서대로 반영하고 실패 시각은 반영하지 않는다', async () => {
+  let now = 100;
+  let mode = 'normal';
+  const closeGates = [];
+  const closeStarted = [];
+  const handle = {
+    name: 'timed.json',
+    async createWritable() {
+      const jobMode = mode;
+      return {
+        async write() {},
+        async close() {
+          if (jobMode === 'fail') throw new Error('close failed');
+          if (jobMode !== 'gated') return;
+          closeStarted.push(true);
+          await new Promise((resolve) => closeGates.push(resolve));
+        },
+        async abort() {}
+      };
+    }
+  };
+  const FileSync = loadFileSync({ picker: async () => handle, now: () => now });
+  assert.equal(await FileSync.connect(() => ({ step: 0 })), 'connected');
+  assert.equal(FileSync.getState().lastSavedAt, 100);
+
+  mode = 'fail';
+  now = 150;
+  assert.equal(await FileSync.save({ step: 'failed' }), false);
+  assert.equal(FileSync.getState().lastSavedAt, 100);
+
+  mode = 'gated';
+  now = 200;
+  const first = FileSync.save({ step: 1 });
+  now = 300;
+  const second = FileSync.save({ step: 2 });
+  while (closeStarted.length < 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(FileSync.getState().lastSavedAt, 100, '첫 close 성공 전에는 갱신하지 않는다');
+
+  now = 200;
+  closeGates.shift()();
+  assert.equal(await first, true);
+  assert.equal(FileSync.getState().lastSavedAt, 200);
+
+  while (closeStarted.length < 2) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(FileSync.getState().lastSavedAt, 200, '둘째 close 성공 전에는 첫 성공 시각을 유지한다');
+  now = 300;
+  closeGates.shift()();
+  assert.equal(await second, true);
+  assert.equal(FileSync.getState().lastSavedAt, 300);
+});
+
+test('status handler 예외와 connecting 재진입에도 큐를 유지하고 최신 후보를 저장한다', async () => {
+  const writes = [];
+  const unhandled = [];
+  let reentrantSave;
+  let reentrantConnect;
+  let didReenter = false;
+  const candidate = writableHandle(writes, { name: 'latest.json' });
+  const FileSync = loadFileSync({ picker: async () => candidate });
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+
+  try {
+    FileSync.setStatusHandler((state) => {
+      if (state.phase === 'connecting' && !didReenter) {
+        didReenter = true;
+        reentrantSave = FileSync.save({ step: 'latest' });
+        reentrantConnect = FileSync.connect(() => ({ step: 'stale-connect' }));
+      }
+      throw new Error('render failed');
+    });
+
+    const connecting = FileSync.connect(() => ({ step: 'stale' }));
+    assert.equal(await reentrantConnect, 'busy');
+    assert.equal(await connecting, 'connected');
+    assert.equal(await reentrantSave, true);
+    assert.equal(writes.at(-1), JSON.stringify({ step: 'latest' }, null, 2));
+    assert.deepEqual({ ...FileSync.getState() }, {
+      phase: 'connected', fileName: 'latest.json', lastSavedAt: 1_700_000_000_000
+    });
+
+    assert.equal(await FileSync.save({ step: 'after-handler-error' }), true);
+    assert.equal(writes.at(-1), JSON.stringify({ step: 'after-handler-error' }, null, 2));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('악성 형태의 handle.name도 실행하지 않고 파일명 문자열 그대로 상태에 보존한다', async () => {
+  const malicious = '<img src=x onerror=globalThis.pwned=true>.json';
+  const handle = writableHandle([], { name: malicious });
+  const FileSync = loadFileSync({ picker: async () => handle });
+
+  assert.equal(await FileSync.connect(() => ({})), 'connected');
+  assert.equal(FileSync.getState().fileName, malicious);
 });
 
 (async () => {
