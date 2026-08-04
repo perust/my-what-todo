@@ -961,6 +961,7 @@
 
       return commit(() => {
         todos = todos.filter((t) => !doomed.has(t.id));
+        renumber(todos);
         invalidate();
         for (const id of parentIds) reconcileParent(find(id));
         return removed;
@@ -1178,6 +1179,7 @@
         const removed = doomed.map(clone);
 
         todos = todos.filter((t) => !ids.has(t.id));
+        renumber(todos);
         invalidate();
         if (parentId) reconcileParent(find(parentId));
 

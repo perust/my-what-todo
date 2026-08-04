@@ -74,6 +74,19 @@ function todo(id, fields = {}) {
   };
 }
 
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+function assertCanonicalGroups(items) {
+  const groups = new Map();
+  for (const item of items) {
+    if (!groups.has(item.parentId)) groups.set(item.parentId, []);
+    groups.get(item.parentId).push(item.order);
+  }
+  for (const orders of groups.values()) {
+    assert.deepEqual(orders.slice().sort((a, b) => a - b), orders.map((_, i) => i));
+  }
+}
+
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
@@ -138,6 +151,188 @@ test('restore는 삭제된 카테고리를 복원하지 않고 현재 카테고�
   assert.equal(Store.getItem('victim').category, 'personal');
   const roots = Store.getRoots({ type: 'all' });
   assert.equal(new Set(roots.map((item) => item.order)).size, roots.length);
+});
+
+test('remove는 중간 root 삭제 직후 getter·export·저장본·재로드의 order를 정본화한다', () => {
+  const { Store, localStorage } = loadStore({ context: true });
+  assert.ok(Store.importData(baseData({ todos: [
+    todo('root-a', { order: 0, createdAt: 10 }),
+    todo('root-b', { order: 1, createdAt: 20 }),
+    todo('root-c', { order: 2, createdAt: 30 })
+  ] })));
+
+  const removed = Store.remove('root-b');
+  assert.deepEqual(plain(removed).map(({ id, order }) => ({ id, order })), [{ id: 'root-b', order: 1 }]);
+  assert.deepEqual(Array.from(Store.getRoots(), ({ id, order }) => [id, order]), [
+    ['root-a', 0], ['root-c', 1]
+  ]);
+
+  const exported = plain(Store.exportData());
+  assert.deepEqual(exported.todos.map(({ id, order }) => [id, order]), [
+    ['root-a', 0], ['root-c', 1]
+  ]);
+  const persisted = JSON.parse(localStorage.getItem(Store.STORAGE_KEY));
+  assert.deepEqual(persisted.todos, exported.todos);
+
+  Store.load();
+  assert.deepEqual(plain(Store.exportData()), exported);
+  assert.deepEqual(Array.from(Store.getRoots(), ({ id, order }) => [id, order]), [
+    ['root-a', 0], ['root-c', 1]
+  ]);
+});
+
+test('remove는 중간 child 삭제 후 모든 sibling 그룹의 상대 순서와 부모 완료 조정을 보존한다', () => {
+  const Store = loadStore();
+  assert.ok(Store.importData(baseData({ todos: [
+    todo('root-a', { order: 0, createdAt: 10 }),
+    todo('parent', { order: 1, createdAt: 20 }),
+    todo('root-c', { order: 2, createdAt: 30, category: 'personal' }),
+    todo('child-a', { parentId: 'parent', order: 0, createdAt: 40 }),
+    todo('child-b', { parentId: 'parent', order: 1, createdAt: 50, completed: true, completedAt: 50 }),
+    todo('child-c', { parentId: 'parent', order: 2, createdAt: 60 }),
+    todo('other-parent', { order: 3, createdAt: 70, category: 'personal' }),
+    todo('other-a', { parentId: 'other-parent', order: 0, createdAt: 80 }),
+    todo('other-b', { parentId: 'other-parent', order: 1, createdAt: 90 })
+  ] })));
+  const parentCompleted = Store.getItem('parent').completed;
+
+  const removed = Store.remove('child-b');
+  assert.equal(removed[0].order, 1);
+  assert.deepEqual(Array.from(Store.getChildren('parent'), ({ id, order }) => [id, order]), [
+    ['child-a', 0], ['child-c', 1]
+  ]);
+  assert.deepEqual(Array.from(Store.getRoots(), ({ id, order }) => [id, order]), [
+    ['root-a', 0], ['parent', 1], ['root-c', 2], ['other-parent', 3]
+  ]);
+  assert.deepEqual(Array.from(Store.getChildren('other-parent'), ({ id, order }) => [id, order]), [
+    ['other-a', 0], ['other-b', 1]
+  ]);
+  assert.equal(Store.getItem('parent').completed, parentCompleted);
+  assertCanonicalGroups(plain(Store.exportData()).todos);
+});
+
+test('removeCompleted는 root cascade와 여러 parent 그룹 삭제 후 고아 없이 정본·수동 상대 순서를 유지한다', () => {
+  const Store = loadStore();
+  assert.ok(Store.importData(baseData({ todos: [
+    todo('root-a', { title: 'A', order: 0, createdAt: 10 }),
+    todo('root-doomed', { title: 'B', order: 1, createdAt: 20, completed: true, completedAt: 20 }),
+    todo('root-c', { title: 'C', order: 2, createdAt: 30, category: 'personal' }),
+    todo('parent-p', { title: 'P', order: 3, createdAt: 40 }),
+    todo('parent-q', { title: 'Q', order: 4, createdAt: 50, category: 'personal' }),
+    todo('cascade-child', { parentId: 'root-doomed', order: 0, createdAt: 60, completed: true, completedAt: 60 }),
+    todo('p-a', { parentId: 'parent-p', title: 'PA', order: 0, createdAt: 70 }),
+    todo('p-doomed', { parentId: 'parent-p', title: 'PB', order: 1, createdAt: 80, completed: true, completedAt: 80 }),
+    todo('p-c', { parentId: 'parent-p', title: 'PC', order: 2, createdAt: 90 }),
+    todo('q-doomed', { parentId: 'parent-q', title: 'QA', order: 0, createdAt: 100, completed: true, completedAt: 100 }),
+    todo('q-b', { parentId: 'parent-q', title: 'QB', order: 1, createdAt: 110 })
+  ] })));
+  const before = plain(Store.exportData()).todos;
+  const doomedIds = new Set(['root-doomed', 'cascade-child', 'p-doomed', 'q-doomed']);
+  const expectedByParent = new Map();
+  for (const item of before.filter((item) => !doomedIds.has(item.id))) {
+    if (!expectedByParent.has(item.parentId)) expectedByParent.set(item.parentId, []);
+    expectedByParent.get(item.parentId).push([item.id, item.title, item.category]);
+  }
+
+  assert.ok(Store.removeCompleted());
+  const after = plain(Store.exportData()).todos;
+  assertCanonicalGroups(after);
+  const ids = new Set(after.map((item) => item.id));
+  assert.ok(after.every((item) => item.parentId === null || ids.has(item.parentId)));
+  for (const [parentId, expected] of expectedByParent) {
+    assert.deepEqual(
+      after.filter((item) => item.parentId === parentId)
+        .sort((a, b) => a.order - b.order)
+        .map(({ id, title, category }) => [id, title, category]),
+      expected
+    );
+  }
+});
+
+test('remove와 removeCompleted 스냅샷은 삭제 전 order를 보존하고 restore는 원래 상대 위치를 복원한다', () => {
+  const first = loadStore();
+  assert.ok(first.importData(baseData({ todos: [
+    todo('root-a', { order: 0, createdAt: 10 }),
+    todo('root-b', { order: 1, createdAt: 20 }),
+    todo('root-c', { order: 2, createdAt: 30 }),
+    todo('child-b', { parentId: 'root-b', order: 0, createdAt: 40 })
+  ] })));
+  const removed = first.remove('root-b');
+  assert.deepEqual(plain(removed).map(({ id, order }) => [id, order]), [['root-b', 1], ['child-b', 0]]);
+  assert.ok(first.restore(removed));
+  assert.deepEqual(Array.from(first.getRoots(), ({ id, order }) => [id, order]), [
+    ['root-a', 0], ['root-b', 1], ['root-c', 2]
+  ]);
+  assert.deepEqual(Array.from(first.getChildren('root-b'), ({ id, order }) => [id, order]), [['child-b', 0]]);
+
+  const second = loadStore();
+  assert.ok(second.importData(baseData({ todos: [
+    todo('root-a', { order: 0, createdAt: 10 }),
+    todo('root-b', { order: 1, createdAt: 20, completed: true, completedAt: 20 }),
+    todo('root-c', { order: 2, createdAt: 30 }),
+    todo('parent', { order: 3, createdAt: 40 }),
+    todo('child-a', { parentId: 'parent', order: 0, createdAt: 50 }),
+    todo('child-b', { parentId: 'parent', order: 1, createdAt: 60, completed: true, completedAt: 60 }),
+    todo('child-c', { parentId: 'parent', order: 2, createdAt: 70 })
+  ] })));
+  const completed = second.removeCompleted();
+  assert.deepEqual(plain(completed).map(({ id, order }) => [id, order]), [['root-b', 1], ['child-b', 1]]);
+  assert.ok(second.restore(completed));
+  assert.deepEqual(Array.from(second.getRoots(), ({ id, order }) => [id, order]), [
+    ['root-a', 0], ['root-b', 1], ['root-c', 2], ['parent', 3]
+  ]);
+  assert.deepEqual(Array.from(second.getChildren('parent'), ({ id, order }) => [id, order]), [
+    ['child-a', 0], ['child-b', 1], ['child-c', 2]
+  ]);
+});
+
+test('삭제 저장 실패는 remove와 removeCompleted의 필터·renumber·객체 상태를 모두 롤백한다', () => {
+  for (const operation of ['remove', 'removeCompleted']) {
+    const { Store, localStorage } = loadStore({ context: true });
+    assert.ok(Store.importData(baseData({ todos: [
+      todo('root-a', { order: 0, createdAt: 10 }),
+      todo('root-b', { order: 1, createdAt: 20, completed: operation === 'removeCompleted', completedAt: 20 }),
+      todo('root-c', { order: 2, createdAt: 30 }),
+      todo('parent', { order: 3, createdAt: 40 }),
+      todo('child-a', { parentId: 'parent', order: 0, createdAt: 50 }),
+      todo('child-b', { parentId: 'parent', order: 1, createdAt: 60, completed: operation === 'removeCompleted', completedAt: 60 }),
+      todo('child-c', { parentId: 'parent', order: 2, createdAt: 70 })
+    ] })));
+    const before = plain(Store.exportData());
+    const references = new Map(before.todos.map((item) => [item.id, Store.getItem(item.id)]));
+    const rawBefore = localStorage.getItem(Store.STORAGE_KEY);
+    localStorage.setItem = () => { throw new Error('quota'); };
+
+    const result = operation === 'remove' ? Store.remove('root-b') : Store.removeCompleted();
+    assert.equal(result, null);
+    assert.equal(Store.lastError, 'save');
+    assert.deepEqual(plain(Store.exportData()), before);
+    assert.equal(localStorage.getItem(Store.STORAGE_KEY), rawBefore);
+    for (const [id, reference] of references) assert.equal(Store.getItem(id), reference);
+  }
+});
+
+test('유효하지 않은 remove와 완료 항목 없는 removeCompleted는 rev·저장·객체를 건드리지 않는다', () => {
+  const { Store, localStorage } = loadStore({ context: true });
+  assert.ok(Store.importData(baseData({ todos: [
+    todo('root-a', { order: 0, createdAt: 10 }),
+    todo('root-b', { order: 1, createdAt: 20 })
+  ] })));
+  const before = plain(Store.exportData());
+  const rawBefore = localStorage.getItem(Store.STORAGE_KEY);
+  const revBefore = JSON.parse(rawBefore).rev;
+  const references = before.todos.map((item) => Store.getItem(item.id));
+  let writes = 0;
+  const originalSetItem = localStorage.setItem;
+  localStorage.setItem = (...args) => { writes += 1; return originalSetItem.call(localStorage, ...args); };
+
+  assert.equal(Store.remove('missing'), null);
+  assert.equal(Store.removeCompleted(), null);
+  assert.equal(writes, 0);
+  assert.equal(localStorage.getItem(Store.STORAGE_KEY), rawBefore);
+  assert.equal(JSON.parse(localStorage.getItem(Store.STORAGE_KEY)).rev, revBefore);
+  assert.deepEqual(plain(Store.exportData()), before);
+  assert.deepEqual(before.todos.map((item) => Store.getItem(item.id)), references);
 });
 
 test('검색 태그 바는 문맥 상위의 직접 불일치 태그를 집계하지 않는다', () => {
