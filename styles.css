@@ -1837,12 +1837,14 @@ button.badge:hover {
   flex: none;
 }
 
-.file-conflict-resolve {
+.file-conflict-resolve,
+.markdown-conflict-resolve {
   flex: none;
 }
 
 .file-retry[hidden],
-.file-conflict-resolve[hidden] {
+.file-conflict-resolve[hidden],
+.markdown-conflict-resolve[hidden] {
   display: none;
 }
 

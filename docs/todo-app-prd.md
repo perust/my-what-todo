@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v3.5 (2026-08-04) — JSON 외부 변경 감지·충돌 해결 5A |
+| 문서 버전 | v3.6 (2026-08-04) — Markdown 외부 변경 감지·충돌 해결 5B |
 | 제품 코드명 | `daily-todo` (화면에 보이는 이름은 **My What Todo**) |
 | 한 줄 요약 | 해야 할 일을 실행 단위로 쪼개 2단계로 관리하고, 우선순위·태그로 추려 보며 완료율을 확인하는 1인용 웹 앱 |
 | 대상 사용자 | 본인 1명 (단일 기기, 단일 브라우저) |
@@ -618,9 +618,34 @@ read→write TOCTOU 경쟁은 남는다. 비교를 `createWritable()` 직전 같
 - [ ] 형제는 `order` → `createdAt` → `id` 순으로 정렬하고, 같은 snapshot은 언제나 같은
       bytes를 만든다. 제목·태그·카테고리는 HTML/Markdown으로 실행되지 않게 escape한다
 - [ ] Markdown은 **앱이 정본인 단방향 읽기 전용 보기**다. Markdown 파일의 직접 편집을
-      읽거나 앱에 반영하는 파서, 양방향 동기화, 외부 변경 감지는 명시적으로 제외한다
+      읽거나 앱에 반영하는 파서와 양방향 동기화는 명시적으로 제외한다
 - [ ] render/write 실패는 LocalStorage 정본과 JSON mirror를 막지 않으며, 실패한 새 연결은
       오래된 후보를 활성화하지 않는다. 기존 연결이 있으면 그 핸들과 마지막 성공 상태를 보존한다
+
+**Markdown 외부 변경 감지·충돌 해결 (5B)**
+
+- [ ] `getFile().text()`가 있는 Markdown handle은 성공한 own write의 exact bytes를 handle별
+      baseline으로 메모리에만 둔다. handle과 baseline은 현재 페이지 세션을 벗어나 저장하지 않는다
+- [ ] 자동 save는 같은 serial job 안에서 `createWritable()` 직전에 현재 bytes를 baseline과
+      비교하고 다르면 write 없이 conflict로 전환한다. 초기 connect 첫 쓰기는 명시적 덮어쓰기라
+      비교하지 않으며, 같은 connect drain의 후속 쓰기부터 비교한다
+- [ ] conflict 동안 LocalStorage·UI·JSON mirror는 유지하고 Markdown 자동 저장만 멈춘다.
+      해결 선택은 `앱 내용으로 덮어쓰기` / `외부 파일 유지` / `취소`다
+- [ ] force는 실행 시 최신 `Store.exportData()`를 다시 render하고 진행 중 새 save까지 drain한다.
+      `외부 파일 유지`는 Markdown bytes를 쓰지 않고 Markdown 연결만 해제한다
+- [ ] `checkExternal()`은 focus와 hidden→visible에서 read-only 비교한다. read 오류는 false
+      conflict로 만들지 않고 자동 저장 보류 상태로 알리며, 정상 재검사/저장으로 복구한다
+- [ ] 취소하거나 initial write에 실패한 재연결은 기존 active conflict를 보존한다. 성공한
+      재연결만 conflict를 해제하고 성공 bytes로 새 baseline을 만든다
+- [ ] `getFile`이 없는 구형/test handle은 저장을 유지하되 감지 불가를 conflict로 오인하지 않는다
+- [ ] 외부 원문·handle·오류 객체는 public state, toast, DOM에 공개하지 않는다
+
+파일 API에는 원자적 compare-and-swap이 없으므로 Markdown도 확인 read→write 사이의 TOCTOU
+경쟁이 남는다. 비교를 같은 serial job의 쓰기 직전에 두어 창을 줄이지만 **best-effort(최선 노력)**
+보호이며, 외부 프로세스가 그 짧은 사이에 다시 쓰는 경우까지 원자적으로 막지는 못한다.
+
+Markdown 편집을 앱으로 읽는 **6단계 parser/import**는 기존 후속 범위로 남는다. 5B는 외부
+편집을 감지해 앱의 자동 덮어쓰기를 멈출 뿐, Markdown 내용을 가져오거나 양방향 동기화하지 않는다.
 
 ### F-19. 정렬 옵션
 

@@ -37,6 +37,34 @@ function writableHandle(writes, hooks = {}) {
   };
 }
 
+function detectableHandle(initial = '', hooks = {}) {
+  const writes = [];
+  let bytes = initial;
+  let creates = 0;
+  const handle = {
+    name: hooks.name ?? 'vault.md',
+    async getFile() {
+      await hooks.onGetFile?.();
+      return { async text() { await hooks.onText?.(); return bytes; } };
+    },
+    async createWritable() {
+      creates += 1;
+      hooks.onCreate?.();
+      return {
+        async write(text) { await hooks.onWrite?.(text); writes.push(text); bytes = text; },
+        async close() { await hooks.onClose?.(); },
+        async abort() { await hooks.onAbort?.(); }
+      };
+    }
+  };
+  return {
+    handle, writes,
+    external(text) { bytes = text; },
+    get bytes() { return bytes; },
+    get creates() { return creates; }
+  };
+}
+
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -45,11 +73,14 @@ test('초기 frozen 상태에는 원문이나 오류 객체가 없고 disconnect
   const sync = loadSync();
   const state = sync.getState();
   assert.deepEqual({ ...state }, {
-    phase: 'disconnected', fileName: null, lastSavedAt: null, saveError: false
+    phase: 'disconnected', fileName: null, lastSavedAt: null, saveError: false,
+    checkError: false, conflict: false, forcing: false
   });
   assert.equal(Object.isFrozen(state), true);
   assert.throws(() => { state.phase = 'connected'; }, TypeError);
-  assert.deepEqual(Object.keys(state), ['phase', 'fileName', 'lastSavedAt', 'saveError']);
+  assert.deepEqual(Object.keys(state), [
+    'phase', 'fileName', 'lastSavedAt', 'saveError', 'checkError', 'conflict', 'forcing'
+  ]);
 });
 
 test('Markdown picker 옵션과 현재 snapshot initial write+close를 정확히 사용한다', async () => {
@@ -66,7 +97,8 @@ test('Markdown picker 옵션과 현재 snapshot initial write+close를 정확히
   assert.deepEqual(writes, ['STEP:1\n']);
   assert.equal(closes, 1);
   assert.deepEqual({ ...sync.getState() }, {
-    phase: 'connected', fileName: 'vault.md', lastSavedAt: 1_700_000_000_000, saveError: false
+    phase: 'connected', fileName: 'vault.md', lastSavedAt: 1_700_000_000_000, saveError: false,
+    checkError: false, conflict: false, forcing: false
   });
 });
 
@@ -153,12 +185,14 @@ test('picker 취소와 후보 initial write 실패는 기존 연결·시각·오
   picked = 'cancel';
   assert.equal(await sync.connect(() => ({ step: 2 })), 'cancelled');
   assert.deepEqual({ ...sync.getState() }, {
-    phase: 'connected', fileName: 'old.md', lastSavedAt: 100, saveError: true
+    phase: 'connected', fileName: 'old.md', lastSavedAt: 100, saveError: true,
+    checkError: false, conflict: false, forcing: false
   });
   picked = broken;
   assert.equal(await sync.connect(() => ({ step: 3 })), 'error');
   assert.deepEqual({ ...sync.getState() }, {
-    phase: 'connected', fileName: 'old.md', lastSavedAt: 100, saveError: true
+    phase: 'connected', fileName: 'old.md', lastSavedAt: 100, saveError: true,
+    checkError: false, conflict: false, forcing: false
   });
   assert.deepEqual(errors, ['old fail', 'candidate fail']);
 });
@@ -281,7 +315,8 @@ test('첫 연결 initial write gate 중 최신 render 실패는 stale candidate�
   assert.equal(await saving, false);
   assert.deepEqual(writes, ['OK:0\n']);
   assert.deepEqual({ ...sync.getState() }, {
-    phase: 'disconnected', fileName: null, lastSavedAt: null, saveError: false
+    phase: 'disconnected', fileName: null, lastSavedAt: null, saveError: false,
+    checkError: false, conflict: false, forcing: false
   });
   assert.deepEqual(errors, ['private malformed payload']);
 });
@@ -320,7 +355,8 @@ test('재연결 initial write gate 중 최신 render 실패는 old handle/state�
   assert.deepEqual(candidateWrites, ['OK:10\n']);
   assert.deepEqual(oldWrites, ['OK:0\n']);
   assert.deepEqual({ ...sync.getState() }, {
-    phase: 'connected', fileName: 'old.md', lastSavedAt: 100, saveError: true
+    phase: 'connected', fileName: 'old.md', lastSavedAt: 100, saveError: true,
+    checkError: false, conflict: false, forcing: false
   });
   assert.deepEqual(errors, ['newer render failed']);
 
@@ -376,6 +412,280 @@ test('비거나 문자열이 아닌 파일명은 안전한 suggestedName으로 �
     await sync.connect(() => ({ step: 0 }));
     assert.equal(sync.getState().fileName, 'my-what-todo.md');
   }
+});
+
+test('detectable baseline은 unchanged save를 허용하고 external mismatch는 writable 전에 conflict로 막는다', async () => {
+  const file = detectableHandle('OLD');
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  assert.equal(await sync.checkExternal(), 'unchanged');
+  assert.equal(await sync.save({ step: 1 }), true);
+  file.external('EXTERNAL PRIVATE');
+  assert.equal(await sync.save({ step: 2 }), false);
+  assert.equal(file.creates, 2);
+  assert.equal(sync.getState().conflict, true);
+  assert.equal(JSON.stringify(sync.getState()).includes('EXTERNAL PRIVATE'), false);
+  assert.deepEqual(Object.keys(sync.getState()), [
+    'phase', 'fileName', 'lastSavedAt', 'saveError', 'checkError', 'conflict', 'forcing'
+  ]);
+});
+
+test('conflict의 빠른 save는 write 없이 최신 render를 보관하고 force가 current부터 drain한다', async () => {
+  let release;
+  let block = false;
+  const file = detectableHandle('', { onWrite: async () => {
+    if (block) {
+      block = false;
+      await new Promise((resolve) => { release = resolve; });
+    }
+  } });
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('external');
+  assert.deepEqual(await Promise.all([sync.save({ step: 1 }), sync.save({ step: 2 })]), [false, false]);
+  block = true;
+  const forceA = sync.forceOverwrite(() => ({ step: 3 }));
+  const forceB = sync.forceOverwrite(() => ({ step: 99 }));
+  assert.equal(forceA, forceB, 'double force는 같은 promise다');
+  while (!release) await tick();
+  const saving = sync.save({ step: 4 });
+  release();
+  while (file.writes.at(-1) !== 'STEP:4\n') await tick();
+  block = false;
+  release?.();
+  assert.equal(await forceA, true);
+  assert.equal(await saving, false);
+  assert.deepEqual(file.writes.slice(-2), ['STEP:3\n', 'STEP:4\n']);
+  assert.equal(sync.getState().conflict, false);
+});
+
+test('force 실패는 conflict를 보존하고 다음 explicit force로 복구한다', async () => {
+  let fail = false;
+  const file = detectableHandle('', { onWrite: () => { if (fail) throw new Error('force fail'); } });
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('external');
+  await sync.checkExternal();
+  fail = true;
+  assert.equal(await sync.forceOverwrite(() => ({ step: 1 })), false);
+  assert.equal(sync.getState().conflict, true);
+  fail = false;
+  assert.equal(await sync.forceOverwrite(() => ({ step: 2 })), true);
+  assert.equal(file.writes.at(-1), 'STEP:2\n');
+  assert.equal(sync.getState().conflict, false);
+});
+
+test('keepExternal은 conflict에서 write 없이 disconnect하며 forcing/connect busy는 fail-safe다', async () => {
+  let release;
+  let gate = false;
+  const file = detectableHandle('', { onWrite: async () => {
+    if (gate) await new Promise((resolve) => { release = resolve; });
+  } });
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('external');
+  await sync.checkExternal();
+  gate = true;
+  const forcing = sync.forceOverwrite(() => ({ step: 1 }));
+  while (!release) await tick();
+  assert.equal(await sync.keepExternal(), 'busy');
+  assert.equal(await sync.connect(() => ({ step: 2 })), 'busy');
+  release();
+  await forcing;
+  file.external('external again');
+  await sync.checkExternal();
+  const writes = file.writes.length;
+  assert.equal(await sync.keepExternal(), 'disconnected');
+  assert.equal(file.writes.length, writes);
+  assert.equal(sync.getState().phase, 'disconnected');
+});
+
+test('checkExternal은 unchanged/conflict/read error/unsupported와 transient recovery를 안전하게 반환한다', async () => {
+  let readFail = false;
+  const errors = [];
+  const file = detectableHandle('', { onText: () => { if (readFail) throw new Error('read denied'); } });
+  const sync = loadSync({ picker: async () => file.handle, onError: (error) => errors.push(error.message) });
+  await sync.connect(() => ({ step: 0 }));
+  assert.equal(await sync.checkExternal(), 'unchanged');
+  readFail = true;
+  assert.equal(await sync.checkExternal(), 'error');
+  assert.equal(sync.getState().checkError, true);
+  assert.equal(sync.getState().saveError, false);
+  readFail = false;
+  assert.equal(await sync.checkExternal(), 'unchanged');
+  assert.equal(sync.getState().checkError, false);
+  file.external('changed');
+  assert.equal(await sync.checkExternal(), 'conflict');
+  assert.deepEqual(errors, ['read denied']);
+  const fallback = loadSync({ picker: async () => writableHandle([]) });
+  await fallback.connect(() => ({ step: 0 }));
+  assert.equal(await fallback.checkExternal(), 'unsupported');
+});
+
+test('automatic save preflight read 오류의 pending Markdown은 unchanged check로 지우지 않는다', async () => {
+  let readFail = false;
+  const errors = [];
+  const file = detectableHandle('', { onGetFile: () => {
+    if (readFail) throw new Error('read blocked');
+  } });
+  const sync = loadSync({
+    picker: async () => file.handle,
+    onError: (error) => errors.push(error.message)
+  });
+  await sync.connect(() => ({ step: 'A' }));
+  const createsAfterBaseline = file.creates;
+  const writesAfterBaseline = file.writes.length;
+
+  readFail = true;
+  assert.equal(await sync.save({ step: 'B' }), false);
+  assert.equal(sync.getState().checkError, true);
+  assert.equal(file.creates, createsAfterBaseline);
+  assert.equal(file.writes.length, writesAfterBaseline);
+
+  assert.equal(await sync.checkExternal(), 'error');
+  assert.equal(sync.getState().checkError, true);
+  assert.equal(JSON.stringify(sync.getState()).includes('B'), false);
+  assert.equal(file.creates, createsAfterBaseline);
+  assert.equal(file.writes.length, writesAfterBaseline);
+  assert.deepEqual(errors, ['read blocked']);
+
+  readFail = false;
+  assert.equal(await sync.checkExternal(), 'unchanged');
+  assert.equal(sync.getState().checkError, true);
+  assert.equal(JSON.stringify(sync.getState()).includes('B'), false);
+  assert.equal(file.creates, createsAfterBaseline);
+  assert.equal(file.writes.length, writesAfterBaseline);
+
+  assert.equal(await sync.save({ step: 'C' }), true);
+  assert.equal(sync.getState().checkError, false);
+  assert.equal(file.creates, createsAfterBaseline + 1);
+  assert.equal(file.bytes, 'STEP:C\n');
+});
+
+test('read-only unchanged check는 기존 write error를 지우지 않는다', async () => {
+  let fail = false;
+  const file = detectableHandle('', { onWrite: () => { if (fail) throw new Error('disk'); } });
+  const sync = loadSync({ picker: async () => file.handle });
+  await sync.connect(() => ({ step: 0 }));
+  fail = true;
+  await sync.save({ step: 1 });
+  assert.equal(sync.getState().saveError, true);
+  assert.equal(await sync.checkExternal(), 'unchanged');
+  assert.equal(sync.getState().saveError, true);
+});
+
+test('read-only check 오류가 write failure를 전환해도 pending Markdown은 보존한다', async () => {
+  let writeFail = false;
+  let readFail = false;
+  const errors = [];
+  const file = detectableHandle('', {
+    onGetFile: () => { if (readFail) throw new Error('read blocked'); },
+    onWrite: () => { if (writeFail) throw new Error('write blocked'); }
+  });
+  const sync = loadSync({
+    picker: async () => file.handle,
+    onError: (error) => errors.push(error.message)
+  });
+  await sync.connect(() => ({ step: 'A' }));
+  const createsAfterBaseline = file.creates;
+
+  writeFail = true;
+  assert.equal(await sync.save({ step: 'B' }), false);
+  assert.equal(sync.getState().saveError, true);
+
+  writeFail = false;
+  readFail = true;
+  assert.equal(await sync.checkExternal(), 'error');
+  assert.equal(sync.getState().saveError, false);
+  assert.equal(sync.getState().checkError, true);
+  assert.equal(file.creates, createsAfterBaseline + 1);
+
+  readFail = false;
+  assert.equal(await sync.checkExternal(), 'unchanged');
+  assert.equal(sync.getState().checkError, true);
+  assert.equal(await sync.save({ step: 'C' }), true);
+  assert.equal(sync.getState().checkError, false);
+  assert.equal(file.bytes, 'STEP:C\n');
+  assert.deepEqual(errors, ['write blocked', 'read blocked']);
+});
+
+test('connect initial overwrite 뒤 candidate drain은 baseline preflight로 외부 변경을 보존한다', async () => {
+  let releaseFirst;
+  let releaseCheck;
+  let first = true;
+  const file = detectableHandle('', {
+    onWrite: async () => {
+      if (!first) return;
+      first = false;
+      await new Promise((resolve) => { releaseFirst = resolve; });
+    },
+    onGetFile: async () => {
+      await new Promise((resolve) => { releaseCheck = resolve; });
+    }
+  });
+  const sync = loadSync({ picker: async () => file.handle });
+  const connecting = sync.connect(() => ({ step: 0 }));
+  while (!releaseFirst) await tick();
+  const saving = sync.save({ step: 1 });
+  releaseFirst();
+  while (!releaseCheck) await tick();
+  file.external('external between writes');
+  releaseCheck();
+  assert.equal(await connecting, 'error');
+  assert.equal(await saving, false);
+  assert.equal(file.creates, 1);
+  assert.equal(sync.getState().phase, 'disconnected');
+});
+
+test('conflict 중 render failure는 candidate를 null로 만들어 stale force를 막는다', async () => {
+  let failRender = false;
+  const file = detectableHandle();
+  const sync = loadSync({
+    picker: async () => file.handle,
+    render: (value) => { if (failRender) throw new Error('private render'); return `STEP:${value.step}\n`; }
+  });
+  await sync.connect(() => ({ step: 0 }));
+  file.external('external');
+  await sync.save({ step: 1 });
+  failRender = true;
+  await sync.save({ step: 2 });
+  assert.equal(await sync.forceOverwrite(() => ({ step: 3 })), false);
+  assert.equal(file.writes.length, 1);
+  assert.equal(sync.getState().conflict, true);
+});
+
+test('conflict 재연결 취소/초기 실패는 active conflict를 보존하고 성공만 새 baseline으로 해제한다', async () => {
+  const old = detectableHandle('', { name: 'old.md' });
+  const broken = writableHandle([], {
+    name: 'broken.md',
+    onWrite: () => { throw new Error('candidate failed'); }
+  });
+  const fresh = detectableHandle('', { name: 'fresh.md' });
+  let picked = old.handle;
+  const sync = loadSync({ picker: async () => {
+    if (picked === 'cancel') throw Object.assign(new Error('cancel'), { name: 'AbortError' });
+    return picked;
+  } });
+
+  await sync.connect(() => ({ step: 0 }));
+  old.external('external old bytes');
+  assert.equal(await sync.checkExternal(), 'conflict');
+
+  picked = 'cancel';
+  assert.equal(await sync.connect(() => ({ step: 1 })), 'cancelled');
+  assert.equal(sync.getState().conflict, true);
+  assert.equal(sync.getState().fileName, 'old.md');
+
+  picked = broken;
+  assert.equal(await sync.connect(() => ({ step: 2 })), 'error');
+  assert.equal(sync.getState().conflict, true);
+  assert.equal(sync.getState().fileName, 'old.md');
+
+  picked = fresh.handle;
+  assert.equal(await sync.connect(() => ({ step: 3 })), 'connected');
+  assert.equal(sync.getState().conflict, false);
+  assert.equal(sync.getState().fileName, 'fresh.md');
+  assert.equal(await sync.checkExternal(), 'unchanged', '성공한 initial bytes가 새 baseline이다');
 });
 
 (async () => {

@@ -309,11 +309,15 @@ function loadApp(options = {}) {
   let fileErrorHandler = null;
   let currentFileState = null;
   let markdownStatusHandler = null;
+  let markdownErrorHandler = null;
   let retryCalls = 0;
   let forceCalls = 0;
   let keepExternalCalls = 0;
   let checkExternalCalls = 0;
   let markdownConnectCalls = 0;
+  let markdownForceCalls = 0;
+  let markdownKeepExternalCalls = 0;
+  let markdownCheckExternalCalls = 0;
   let loadCount = 0;
   let importCount = 0;
   const categories = [{ id: 'work', name: '업무', hue: 220 }];
@@ -366,6 +370,8 @@ function loadApp(options = {}) {
       },
       checkExternal() {
         checkExternalCalls += 1;
+        if (options.fileCheckThrows) throw new Error('file check throw');
+        if (options.fileCheckRejects) return Promise.reject(new Error('file check reject'));
         return Promise.resolve(options.checkExternalResult ?? 'unchanged');
       },
       getState() { return currentFileState; },
@@ -393,7 +399,25 @@ function loadApp(options = {}) {
         if (options.markdownSaveRejects) return Promise.reject(new Error('markdown sync reject'));
         return Promise.resolve(options.markdownSaveResult ?? true);
       },
-      setErrorHandler() {},
+      forceOverwrite(getSnapshot) {
+        markdownForceCalls += 1;
+        if (options.captureMarkdownForceSnapshot) markdownSnapshots.push(getSnapshot());
+        if (options.markdownForceRejects) return Promise.reject(new Error('markdown force reject'));
+        return Promise.resolve(options.markdownForceResult ?? true);
+      },
+      keepExternal() {
+        markdownKeepExternalCalls += 1;
+        if (options.markdownKeepExternalRejects) return Promise.reject(new Error('markdown keep reject'));
+        return Promise.resolve(options.markdownKeepExternalResult ?? 'disconnected');
+      },
+      checkExternal() {
+        markdownCheckExternalCalls += 1;
+        if (options.markdownCheckThrows) throw new Error('markdown check throw');
+        if (options.markdownCheckRejects) return Promise.reject(new Error('markdown check reject'));
+        return Promise.resolve(options.markdownCheckExternalResult ?? 'unchanged');
+      },
+      getState() { return options.markdownState ?? null; },
+      setErrorHandler(handler) { markdownErrorHandler = handler; },
       setStatusHandler(handler) {
         markdownStatusHandler = handler;
         handler({ phase: 'disconnected', fileName: null, lastSavedAt: null, saveError: false });
@@ -434,6 +458,7 @@ function loadApp(options = {}) {
     emitFileStatus(state) { currentFileState = state; fileStatusHandler(state); },
     emitFileError(error = new Error('file error')) { fileErrorHandler(error); },
     emitMarkdownStatus(state) { markdownStatusHandler(state); },
+    emitMarkdownError(error = new Error('markdown error')) { markdownErrorHandler(error); },
     dispatchGlobal(type, init = {}) {
       for (const fn of globalListeners.get(type) ?? []) fn({ type, ...init });
     },
@@ -442,6 +467,9 @@ function loadApp(options = {}) {
     get keepExternalCalls() { return keepExternalCalls; },
     get checkExternalCalls() { return checkExternalCalls; },
     get markdownConnectCalls() { return markdownConnectCalls; },
+    get markdownForceCalls() { return markdownForceCalls; },
+    get markdownKeepExternalCalls() { return markdownKeepExternalCalls; },
+    get markdownCheckExternalCalls() { return markdownCheckExternalCalls; },
     get loadCount() { return loadCount; }, get importCount() { return importCount; }
   };
 }
@@ -960,7 +988,7 @@ test('정적 충돌 dialog와 버튼은 정확한 세 선택·접근성·모바�
   assert.match(html, /data-choice="force"[^>]*>앱 내용으로 덮어쓰기<\/button>/);
   assert.match(html, /data-choice="keep"[^>]*>외부 파일 유지<\/button>/);
   assert.match(html, /data-choice="cancel"[^>]*>취소<\/button>/);
-  assert.match(css, /\.file-conflict-resolve\s*\{[^}]*flex\s*:\s*none/s);
+  assert.match(css, /\.file-conflict-resolve\s*,\s*\.markdown-conflict-resolve\s*\{[^}]*flex\s*:\s*none/s);
   assert.match(css, /@media[^{}]*\(max-width:[^)]*\)[\s\S]*?\.conflict-actions\s*\{[^}]*flex-direction\s*:\s*column/s);
 });
 
@@ -971,6 +999,161 @@ test('도움말과 PRD는 JSON 외부 변경 보호와 read→write TOCTOU 잔�
   assert.match(html, /외부 변경[^<]*(감지|충돌)/);
   assert.match(`${readme}\n${prd}`, /TOCTOU|read.?→.?write|읽기.?→.?쓰기/i);
   assert.match(`${readme}\n${prd}`, /best-effort|최선 노력/i);
+});
+
+test('Markdown conflict/checkError 상태와 해결 버튼은 JSON과 독립된 정확한 문구를 렌더한다', () => {
+  const app = loadApp();
+  const resolve = app.document.getElementById('markdown-conflict-resolve');
+  const connect = app.document.getElementById('markdown-connect');
+  app.emitMarkdownStatus({
+    phase: 'connected', fileName: 'vault.md', lastSavedAt: 123,
+    saveError: false, checkError: false, conflict: true, forcing: false
+  });
+  assert.equal(app.document.getElementById('markdown-status').textContent,
+    'vault.md Markdown 연결됨 · 외부 변경 감지 · 자동 저장 중지');
+  assert.equal(resolve.hidden, false);
+  assert.equal(resolve.textContent, 'Markdown 충돌 해결');
+  assert.equal(connect.disabled, false);
+
+  app.emitMarkdownStatus({
+    phase: 'connected', fileName: 'vault.md', lastSavedAt: 123,
+    saveError: false, checkError: true, conflict: false, forcing: false
+  });
+  assert.equal(app.document.getElementById('markdown-status').textContent,
+    'vault.md Markdown 연결됨 · 외부 변경 확인 실패 · 자동 저장 보류');
+  assert.equal(resolve.hidden, true);
+
+  app.emitMarkdownStatus({
+    phase: 'connected', fileName: 'vault.md', lastSavedAt: 123,
+    saveError: false, checkError: false, conflict: true, forcing: true
+  });
+  assert.equal(resolve.disabled, true);
+  assert.equal(resolve.textContent, '해결 중…');
+  assert.equal(connect.disabled, true);
+});
+
+test('Markdown 전용 충돌 dialog는 current Store force와 Markdown-only keep/cancel을 호출한다', async () => {
+  const force = loadApp({ captureMarkdownForceSnapshot: true });
+  force.document.getElementById('markdown-conflict-resolve').click();
+  const dialog = force.document.getElementById('markdown-conflict-dialog');
+  assert.equal(dialog.open, true);
+  const forceButton = new FakeElement('button', force.document);
+  forceButton.dataset.choice = 'force';
+  dialog.dispatch('click', { target: forceButton });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(force.markdownForceCalls, 1);
+  assert.equal(force.markdownSnapshots[0].categories[0].id, 'work');
+  assert.equal(force.forceCalls, 0, 'JSON force는 독립이다');
+  assert.equal(force.document.getElementById('toast').textContent,
+    '앱의 최신 내용으로 Markdown 파일을 덮어썼습니다.');
+
+  const keep = loadApp();
+  const keepDialog = keep.document.getElementById('markdown-conflict-dialog');
+  keepDialog.showModal();
+  const keepButton = new FakeElement('button', keep.document);
+  keepButton.dataset.choice = 'keep';
+  keepDialog.dispatch('click', { target: keepButton });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(keep.markdownKeepExternalCalls, 1);
+  assert.equal(keep.keepExternalCalls, 0);
+  assert.equal(keep.fileSnapshots.length, 0);
+  assert.equal(keep.markdownSnapshots.length, 0);
+  assert.equal(keep.document.getElementById('toast').textContent,
+    '외부 파일을 유지하고 Markdown 연결을 해제했습니다.');
+});
+
+test('Markdown 충돌 해결 실패/busy/rejection은 정확한 notice로 흡수하고 cancel은 무변경이다', async () => {
+  const choose = async (app, choice) => {
+    const dialog = app.document.getElementById('markdown-conflict-dialog');
+    dialog.showModal();
+    const button = new FakeElement('button', app.document);
+    button.dataset.choice = choice;
+    dialog.dispatch('click', { target: button });
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  const forceFail = loadApp({ markdownForceResult: false });
+  await choose(forceFail, 'force');
+  assert.equal(forceFail.document.getElementById('toast').textContent,
+    '덮어쓰지 못했습니다. Markdown 외부 변경 충돌은 그대로 유지됩니다.');
+
+  const forceReject = loadApp({ markdownForceRejects: true });
+  await choose(forceReject, 'force');
+  assert.equal(forceReject.document.getElementById('toast').textContent,
+    '덮어쓰지 못했습니다. Markdown 외부 변경 충돌은 그대로 유지됩니다.');
+
+  const busy = loadApp({ markdownKeepExternalResult: 'busy' });
+  await choose(busy, 'keep');
+  assert.equal(busy.document.getElementById('toast').textContent,
+    'Markdown 파일 작업이 진행 중입니다. 끝난 뒤 다시 선택해 주세요.');
+
+  const keepFail = loadApp({ markdownKeepExternalRejects: true });
+  await choose(keepFail, 'keep');
+  assert.equal(keepFail.document.getElementById('toast').textContent,
+    '외부 Markdown 파일 유지에 실패했습니다. 충돌은 그대로 유지됩니다.');
+
+  const cancel = loadApp();
+  await choose(cancel, 'cancel');
+  assert.equal(cancel.markdownForceCalls, 0);
+  assert.equal(cancel.markdownKeepExternalCalls, 0);
+  assert.equal(cancel.document.getElementById('toast').textContent, '');
+});
+
+test('Markdown read-check 오류와 write 오류는 상태에 맞는 독립 notice를 보인다', () => {
+  const check = loadApp({ markdownState: { checkError: true } });
+  check.emitMarkdownError();
+  assert.equal(check.document.getElementById('toast').textContent,
+    '연결한 Markdown 파일의 외부 변경 여부를 확인하지 못했습니다. 브라우저와 JSON 저장 내용은 그대로 유지됩니다.');
+
+  const write = loadApp({ markdownState: { checkError: false } });
+  write.emitMarkdownError();
+  assert.equal(write.document.getElementById('toast').textContent,
+    'Markdown 파일에 저장하지 못했습니다. 브라우저와 JSON 저장 내용은 그대로 유지됩니다.');
+});
+
+test('focus/visible checker는 JSON과 Markdown을 각각 1회 all-settled하고 독립 throw/rejection을 흡수한다', async () => {
+  const markdownThrows = loadApp({ markdownCheckThrows: true });
+  markdownThrows.dispatchGlobal('focus');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(markdownThrows.checkExternalCalls, 1);
+  assert.equal(markdownThrows.markdownCheckExternalCalls, 1);
+
+  const fileRejects = loadApp({ fileCheckRejects: true });
+  const unhandled = [];
+  const listener = (error) => unhandled.push(error);
+  process.on('unhandledRejection', listener);
+  try {
+    fileRejects.document.hidden = false;
+    fileRejects.document.dispatch('visibilitychange');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(fileRejects.checkExternalCalls, 1);
+    assert.equal(fileRejects.markdownCheckExternalCalls, 1);
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.off('unhandledRejection', listener);
+  }
+});
+
+test('정적 Markdown 충돌 UI는 별도 accessible dialog와 모바일 button 계약을 가진다', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  assert.match(html, /id="markdown-conflict-resolve"[^>]*hidden[^>]*>Markdown 충돌 해결<\/button>/);
+  assert.match(html, /<dialog id="markdown-conflict-dialog"[^>]*aria-labelledby="markdown-conflict-dialog-title"/);
+  assert.match(html, /id="markdown-conflict-dialog-title"[^>]*>Markdown 파일 충돌 해결<\/h2>/);
+  assert.match(html, /id="markdown-conflict-dialog"[\s\S]*data-choice="force"[^>]*>앱 내용으로 덮어쓰기<\/button>/);
+  assert.match(html, /id="markdown-conflict-dialog"[\s\S]*data-choice="keep"[^>]*>외부 파일 유지<\/button>/);
+  assert.match(html, /id="markdown-conflict-dialog"[\s\S]*data-choice="cancel"[^>]*>취소<\/button>/);
+  assert.match(css, /\.markdown-conflict-resolve\s*\{[^}]*flex\s*:\s*none/s);
+});
+
+test('README/PRD/help는 Markdown best-effort TOCTOU 보호와 parser/import가 6단계임을 명시한다', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const prd = fs.readFileSync(path.join(ROOT, 'docs/todo-app-prd.md'), 'utf8');
+  assert.match(html, /Markdown[^<]*외부 변경[^<]*(감지|충돌)/);
+  assert.match(`${readme}\n${prd}`, /Markdown[\s\S]{0,400}(TOCTOU|read.?→.?write)/i);
+  assert.match(`${readme}\n${prd}`, /Markdown[\s\S]{0,400}(best-effort|최선 노력)/i);
+  assert.match(`${readme}\n${prd}`, /6단계[\s\S]{0,120}(parser|파서|import|가져오기)/i);
 });
 
 (async () => {

@@ -1144,6 +1144,45 @@ test('transient external check 오류는 같은 handle의 정상 재검사로 �
   }
 });
 
+test('automatic save preflight read 오류의 pending snapshot은 unchanged check로 지우지 않는다', async () => {
+  const hooks = {};
+  const errors = [];
+  const writes = [];
+  const handle = detectableHandle(writes, hooks);
+  const FileSync = loadFileSync({
+    picker: async () => handle,
+    onError: (error) => errors.push(error.message)
+  });
+  await FileSync.connect(() => ({ step: 'A' }));
+  const createsAfterBaseline = handle.creates;
+  const writesAfterBaseline = writes.length;
+
+  hooks.getFileError = new Error('read blocked');
+  assert.equal(await FileSync.save({ step: 'B' }), false);
+  assert.equal(FileSync.getState().checkError, true);
+  assert.equal(handle.creates, createsAfterBaseline);
+  assert.equal(writes.length, writesAfterBaseline);
+
+  assert.equal(await FileSync.checkExternal(), 'error');
+  assert.equal(FileSync.getState().checkError, true);
+  assert.equal(JSON.stringify(FileSync.getState()).includes('B'), false);
+  assert.equal(handle.creates, createsAfterBaseline);
+  assert.equal(writes.length, writesAfterBaseline);
+  assert.deepEqual(errors, ['read blocked']);
+
+  hooks.getFileError = null;
+  assert.equal(await FileSync.checkExternal(), 'unchanged');
+  assert.equal(FileSync.getState().checkError, true);
+  assert.equal(JSON.stringify(FileSync.getState()).includes('B'), false);
+  assert.equal(handle.creates, createsAfterBaseline);
+  assert.equal(writes.length, writesAfterBaseline);
+
+  assert.equal(await FileSync.save({ step: 'C' }), true);
+  assert.equal(FileSync.getState().checkError, false);
+  assert.equal(handle.creates, createsAfterBaseline + 1);
+  assert.equal(handle.bytes, JSON.stringify({ step: 'C' }, null, 2));
+});
+
 test('write failure는 정상 external check로 지우지 않는다', async () => {
   const hooks = {};
   const writes = [];
@@ -1164,6 +1203,40 @@ test('write failure는 정상 external check로 지우지 않는다', async () =
   assert.equal(FileSync.getState().retryAvailable, true);
   assert.equal(handle.creates, createsBeforeCheck);
   assert.equal(writes.length, writesBeforeCheck);
+});
+
+test('read-only check 오류가 write failure를 전환해도 pending snapshot은 보존한다', async () => {
+  const hooks = {};
+  const errors = [];
+  const writes = [];
+  const handle = detectableHandle(writes, hooks);
+  const FileSync = loadFileSync({
+    picker: async () => handle,
+    onError: (error) => errors.push(error.message)
+  });
+  await FileSync.connect(() => ({ step: 'A' }));
+  const createsAfterBaseline = handle.creates;
+
+  hooks.createError = new Error('write blocked');
+  assert.equal(await FileSync.save({ step: 'B' }), false);
+  assert.equal(FileSync.getState().saveError, true);
+  assert.equal(FileSync.getState().retryAvailable, true);
+
+  hooks.createError = null;
+  hooks.getFileError = new Error('read blocked');
+  assert.equal(await FileSync.checkExternal(), 'error');
+  assert.equal(FileSync.getState().saveError, false);
+  assert.equal(FileSync.getState().checkError, true);
+  assert.equal(FileSync.getState().retryAvailable, false);
+  assert.equal(handle.creates, createsAfterBaseline + 1);
+
+  hooks.getFileError = null;
+  assert.equal(await FileSync.checkExternal(), 'unchanged');
+  assert.equal(FileSync.getState().checkError, true);
+  assert.equal(await FileSync.save({ step: 'C' }), true);
+  assert.equal(FileSync.getState().checkError, false);
+  assert.equal(handle.bytes, JSON.stringify({ step: 'C' }, null, 2));
+  assert.deepEqual(errors, ['write blocked', 'read blocked']);
 });
 
 test('write 실패 retry의 preflight read 오류는 check error로 전환되고 다음 automatic save가 복구한다', async () => {
