@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v3.7 (2026-08-04) — canonical Markdown 기존 항목 편집 parser 6A |
+| 문서 버전 | v3.8 (2026-08-04) — Markdown 충돌 외부 편집 preview/confirm 가져오기 6B2 |
 | 제품 코드명 | `daily-todo` (화면에 보이는 이름은 **My What Todo**) |
 | 한 줄 요약 | 해야 할 일을 실행 단위로 쪼개 2단계로 관리하고, 우선순위·태그로 추려 보며 완료율을 확인하는 1인용 웹 앱 |
 | 대상 사용자 | 본인 1명 (단일 기기, 단일 브라우저) |
@@ -612,13 +612,14 @@ read→write TOCTOU 경쟁은 남는다. 비교를 `createWritable()` 직전 같
       연결 뒤의 성공한 Store 변경을 한 쓰기 큐에서 순서대로 덮어쓴다
 - [ ] 파일 핸들은 현재 페이지 세션에서만 유지한다. 새로고침하거나 페이지를 닫으면 다시 골라야 한다
 - [ ] 출력 bytes는 다음 형식을 고정한다: `title`·`generated_by`·`format_version` YAML
-      frontmatter, `# My What Todo`, 읽기 전용 경고, 카테고리 순서의 `##` 절,
+      frontmatter, `# My What Todo`, 제한 편집 가져오기 안내, 카테고리 순서의 `##` 절,
       `- [ ] (P0) 제목 #태그 <!-- my-what-todo:id=... -->` 항목과 2칸 들여쓴 하위 항목,
       그리고 파일 끝 newline 하나
 - [ ] 형제는 `order` → `createdAt` → `id` 순으로 정렬하고, 같은 snapshot은 언제나 같은
       bytes를 만든다. 제목·태그·카테고리는 HTML/Markdown으로 실행되지 않게 escape한다
-- [ ] 4단계 연결 runtime은 **앱이 정본인 단방향 보기**다. 6A의 별도 순수 parser를 이
-      연결이나 Store에 호출하는 app/Sync 통합과 양방향 동기화는 6B까지 제외한다
+- [ ] 4단계 당시 연결 runtime은 **앱이 정본인 단방향 보기**였고, 6A의 별도 순수 parser를
+      연결이나 Store에 호출하는 app/Sync 통합은 제외했다. 현재 6B2의 제한적 충돌 가져오기는
+      아래 6A/6B2 계약에 따라 별도로 통합한다
 - [ ] render/write 실패는 LocalStorage 정본과 JSON mirror를 막지 않으며, 실패한 새 연결은
       오래된 후보를 활성화하지 않는다. 기존 연결이 있으면 그 핸들과 마지막 성공 상태를 보존한다
 
@@ -663,8 +664,18 @@ read→write TOCTOU 경쟁은 남는다. 비교를 `createWritable()` 직전 같
 파서는 current plain graph와 스키마를 accessor 실행 없이 strict 검증하고, 입력 크기를 현재
 canonical bytes와 todo 수에 비례해 제한한다. ID와 escape는 canonical roundtrip을 요구하며,
 마지막에는 반드시 `MarkdownExport.render(data) === text`를 확인한다. 오류는 raw 행·값·외부 ID를
-담지 않는 고정 한국어 `MarkdownImportError`다. 6A script는 export와 sync 사이에 로드하지만
-app/Store/Sync는 호출하지 않는다. 실제 가져오기 UI·충돌 해결·양방향 runtime 연결은 **6B 후속 범위**다.
+담지 않는 고정 한국어 `MarkdownImportError`다. 6A script는 export와 sync 사이에 로드된다.
+6B2에서는 충돌 해결의 `Markdown 편집 가져오기`가 원문을 DOM에 노출하지 않고 변경 종류별
+개수만 미리 보여준다. 체크박스·P0~P3·제목·태그·형제 순서·기존 카테고리 이동·최대 2단계
+재배치만 허용하며, 항목 추가/삭제·카테고리 CRUD·기타 절·설정·임의 Markdown은 거부한다.
+미리보기에는 token/current/baseline/summary만 보관하고 raw text와 parsed data는 버린다.
+
+확인 시 현재 `Store.exportData()`가 baseline과 exact JSON으로 같은지 검사하고 core가 재검증한
+bytes를 저장된 current에 다시 parse한 뒤 동기 `Store.importData`를 호출한다. Store/LocalStorage를
+먼저 적용하며 JSON mirror와 Markdown 정본 저장은 독립적이다. Markdown write/render 실패 뒤에도
+적용된 LocalStorage는 롤백하지 않고 충돌을 유지한다. 연결과 conflict token은 현재 페이지
+세션에만 유지된다. 파일 API에는 원자적 compare-and-swap이 없으므로 read→verify→write 사이
+TOCTOU는 남는 **best-effort(최선 노력)** 보호다.
 
 ### F-19. 정렬 옵션
 
