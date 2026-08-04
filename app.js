@@ -46,6 +46,7 @@
   const sortSelect = document.getElementById('sort-select');
   const exportButton = document.getElementById('export-data');
   const importButton = document.getElementById('import-data');
+  const fileConnectButton = document.getElementById('file-connect');
   const importFile = document.getElementById('import-file');
   const importDialog = document.getElementById('import-dialog');
   const importDialogText = document.getElementById('import-dialog-text');
@@ -163,7 +164,10 @@
    * 값 검증은 호출 전에 끝내두었으므로, 여기 도달한 null은 저장 실패뿐이다.
    */
   function saved(result) {
-    if (result !== null) return result;
+    if (result !== null) {
+      FileSync.save(Store.exportData());
+      return result;
+    }
 
     // 다른 탭이 먼저 썼다면 우리 손의 상태가 낡은 것이다. 덮어쓰지 않고 최신을 읽는다.
     if (Store.lastError === 'conflict') {
@@ -1797,6 +1801,7 @@
     // 되살아난 것을 확인한 뒤에 토스트를 거둔다. 먼저 거두면 저장에 실패했을 때
     // 다시 누를 곳이 사라져 지운 항목이 영영 돌아오지 않는다.
     if (Store.restore(items) !== null) {
+      FileSync.save(Store.exportData());
       // 이 삭제가 부른 알림만 버린다. 되살렸으니 틀린 말이 되기 때문이다 —
       // "태그가 없어졌다"고 알리는 사이에 그 태그는 돌아와 있다. 그 사이에 사용자가
       // 다른 버튼을 눌러 생긴 알림은 여전히 맞는 말이므로 그대로 둔다.
@@ -2100,6 +2105,20 @@
   });
 
   // ── 내보내기 / 가져오기 ──────────────────────────────────
+
+  FileSync.setErrorHandler(() => {
+    showNotice('연결한 파일에 저장하지 못했습니다. 브라우저 저장 내용은 그대로 유지됩니다.');
+  });
+
+  fileConnectButton.addEventListener('click', async () => {
+    if (!FileSync.isSupported()) {
+      showNotice('이 브라우저는 파일 연결을 지원하지 않습니다. 내보내기와 가져오기를 이용해 주세요.');
+      return;
+    }
+
+    const result = await FileSync.connect(() => Store.exportData());
+    if (result === 'connected') showNotice('파일을 연결했습니다. 이후 변경을 이 파일에 자동 저장합니다.');
+  });
 
   /** 외부에 아무것도 보내지 않는다. Blob을 만들어 브라우저가 저장하게 한다. */
   function download(data, name) {

@@ -303,6 +303,7 @@ function makeDocument() {
 function loadApp() {
   const document = makeDocument();
   const restored = [];
+  const fileSnapshots = [];
   let loadCount = 0;
   let importCount = 0;
   const categories = [{ id: 'work', name: '업무', hue: 220 }];
@@ -333,6 +334,12 @@ function loadApp() {
   const globalListeners = new Map();
   const sandbox = {
     console, document, Store,
+    FileSync: {
+      isSupported() { return true; },
+      async connect() { return 'connected'; },
+      save(snapshot) { fileSnapshots.push(snapshot); return Promise.resolve(true); },
+      setErrorHandler() {}
+    },
     Parse: { parseInput: () => ({ title: '', priority: null, tags: [] }) },
     CSS: { escape: (value) => String(value) },
     Blob: class {}, URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
@@ -354,7 +361,7 @@ function loadApp() {
   assert.notEqual(end, -1, 'app test hook insertion point');
   source = source.slice(0, end) + `
   globalThis.__appTest = {
-    showUndo, showNotice, undo, adoptExternal, render, renderTabs, renderTagBar, setFilter,
+    showUndo, showNotice, undo, adoptExternal, render, renderTabs, renderTagBar, setFilter, saved,
     setPendingImport(value) { pendingImport = value; },
     setChanging(categoryId, priorityId) { changingCategory = categoryId; changingPriority = priorityId; },
     state() { return { pendingUndo, changingCategory, changingPriority, queuedNotice }; }
@@ -362,7 +369,7 @@ function loadApp() {
 })();\n`;
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox, { filename: 'app.js' });
-  return { sandbox, document, Store, restored, timers, get loadCount() { return loadCount; }, get importCount() { return importCount; } };
+  return { sandbox, document, Store, restored, fileSnapshots, timers, get loadCount() { return loadCount; }, get importCount() { return importCount; } };
 }
 
 test('연속 삭제는 id 중복 없이 하나의 실행 취소 묶음으로 복원한다', () => {
@@ -436,6 +443,17 @@ test('가져오기 성공은 과거 undo와 대기 알림을 버리고 가져오
   assert.equal(app.document.getElementById('toast').textContent, '1개를 가져왔습니다.');
   hooks.undo();
   assert.equal(app.restored.length, 0);
+});
+
+test('saved 성공 경계는 변경 직후의 Store 스냅샷을 파일 동기화에 넘긴다', () => {
+  const app = loadApp();
+  const result = { id: 'changed' };
+
+  assert.equal(app.sandbox.__appTest.saved(result), result);
+  assert.deepEqual(app.fileSnapshots, [{ todos: [], categories: [{ id: 'work', name: '업무', hue: 220 }] }]);
+
+  app.sandbox.__appTest.saved(null);
+  assert.equal(app.fileSnapshots.length, 1);
 });
 
 if (failures.length) {
