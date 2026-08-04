@@ -185,11 +185,14 @@
     childDraftText = '';
     pendingCategoryRemove = null;
     renamingCategory = null;
+    changingCategory = null;
+    changingPriority = null;
     draggingId = null;
-    hideUndo();
+    releaseUndoForExternal();
 
-    // 가져오기 확인을 기다리던 파일도 접는다. "지금 있는 N개는 사라집니다"의 N이
-    // 이미 옛날 숫자라, 그대로 누르게 두면 없는 것을 지운다고 말한 셈이 된다.
+    // 확인을 기다리는 동안 완료 수나 현재 항목 수가 바뀌었을 수 있다. 낡은 문구로
+    // 새 상태를 지우지 않도록 두 확인창을 모두 접는다.
+    if (clearDialog.open) clearDialog.close();
     if (importDialog.open) importDialog.close();
     pendingImport = null;
 
@@ -1693,6 +1696,36 @@
   }
 
   /**
+   * 외부 변경은 undo 대상만 낡게 만든다. 삭제 때문에 생긴 대기 알림은 함께 버리되,
+   * 그 사이 끝난 뽀모도로처럼 삭제와 무관한 알림은 undo 자리가 비면 그대로 알린다.
+   */
+  function releaseUndoForExternal() {
+    if (pendingUndo === null) {
+      cancelUndo();
+      return;
+    }
+    if (queuedNoticeFromDelete) {
+      queuedNotice = null;
+      queuedNoticeFromDelete = false;
+    }
+    hideUndo();
+  }
+
+  /** 가져오기로 상태를 통째로 갈아끼울 때 undo와 그 상태의 대기 알림까지 버린다. */
+  function cancelUndo() {
+    clearTimeout(undoTimer);
+    undoTimer = null;
+    pendingUndo = null;
+    queuedNotice = null;
+    queuedNoticeFromDelete = false;
+
+    const hadFocus = toast.contains(document.activeElement);
+    toast.hidden = true;
+    toast.textContent = '';
+    if (hadFocus) input.focus();
+  }
+
+  /**
    * 되돌릴 것이 없는 단순 알림. 토스트를 같이 쓴다.
    *
    * **되돌릴 것이 걸려 있는 동안에는 자리를 뺏지 않는다.** 뽀모도로는 아무 때나
@@ -1728,12 +1761,18 @@
    */
   function showUndo(removed, note) {
     clearTimeout(undoTimer);
-    pendingUndo = removed;
+
+    // 두 번째 삭제가 첫 번째의 5초를 없애지 않게 한 묶음으로 합친다. 같은 상위의
+    // 캐스케이드와 완료 일괄 삭제가 겹쳐 들어와도 id 하나당 한 번만 되살린다.
+    const merged = new Map((pendingUndo ?? []).map((item) => [item.id, item]));
+    for (const item of removed) if (!merged.has(item.id)) merged.set(item.id, item);
+    pendingUndo = [...merged.values()];
 
     const label = el('span');
     // 하위가 함께 지워진 경우에만 개수를 밝힌다 (F-04)
     label.textContent =
-      note ?? (removed.length > 1 ? `${removed.length}개 항목을 지웠습니다.` : '지웠습니다.');
+      note ??
+      (pendingUndo.length > 1 ? `${pendingUndo.length}개 항목을 지웠습니다.` : '지웠습니다.');
 
     const button = el('button', 'toast-undo');
     button.type = 'button';
@@ -2137,6 +2176,10 @@
     const result = saved(Store.importData(pendingImport));
     pendingImport = null;
     if (!result) return;
+
+    // 가져오기는 현재 상태를 통째로 바꾼다. 이전 데이터에서 지운 항목을 새 데이터에
+    // 섞어 되살릴 수 없도록 성공을 확인한 뒤 undo와 그에 딸린 대기 알림을 버린다.
+    cancelUndo();
 
     // 가져온 데이터에는 예전 필터가 가리키던 것이 없을 수 있다
     filter = { type: 'all', query: '' };
