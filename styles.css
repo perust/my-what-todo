@@ -30,14 +30,19 @@
 
   --radius: 12px;
   --gap: 10px;
-  --indent: 24px;
+  /* 하위 들여쓰기는 따로 정하지 않는다. 연결선 바로 오른쪽에서 시작하도록 유도한다 —
+     숫자를 둘로 나눠 적으면 좁은 화면에서 한쪽만 고쳐 선이 하위 위로 올라탄다. */
+  --indent: calc(var(--handle) + var(--gap) + var(--marker) + var(--gap) + 4px);
   --marker: 16px;
   --handle: 12px;
   --row-pad: 12px;
 
-  /* 상위 체크박스 중심 = 행 좌패딩 + 손잡이 + 마커 + 간격 둘 + 체크박스 절반 */
+  /* 연결선은 상위 체크박스의 **왼쪽 테두리**에 맞춘다. 중심에 그으면 선이 네모 한가운데를
+     지나 반으로 갈라 보이고, 그만큼 오른쪽이라 하위의 우선순위 숫자를 뚫고 지나갔다.
+     테두리에 세우면 "이 아래는 저 체크박스에 딸린 것"이 선 하나로 읽힌다.
+     = 행 좌패딩 + 손잡이 + 간격 + 마커 + 간격 */
   --line-x: calc(
-    var(--row-pad) + var(--handle) + var(--gap) + var(--marker) + var(--gap) + 9px
+    var(--row-pad) + var(--handle) + var(--gap) + var(--marker) + var(--gap)
   );
 }
 
@@ -1267,7 +1272,10 @@ body {
   flex: none;
   width: var(--marker);
   height: 22px;
-  padding: 0 0 0 5px;
+  /* 왼쪽 여백을 주면 text-align: center가 그 안쪽의 가운데를 잡아 숫자가 오른쪽으로
+     밀린다(16px 칸에서 왼쪽 6.8px · 오른쪽 1.8px였다). 0에만 서는 accent 바는
+     흐름 밖(absolute)이라 자리를 비워둘 필요가 없다. */
+  padding: 0;
   border: 0;
   border-radius: 3px;
   background: none;
@@ -1285,7 +1293,9 @@ body {
 .todo-priority::before {
   content: "";
   position: absolute;
-  left: 0;
+  /* 칸 밖으로 뺀다. 안에 두면 가운데로 옮긴 숫자와 1px 남기고 붙는다.
+     왼쪽은 손잡이와의 간격이라 비어 있다. */
+  left: -5px;
   top: 0;
   bottom: 0;
   width: 3px;
@@ -1784,7 +1794,7 @@ button.badge:hover {
 
 @media (max-width: 480px) {
   :root {
-    --indent: 16px;
+    /* --indent는 정하지 않는다. --gap이 줄면 알아서 함께 줄어든다. */
     --gap: 8px;
     --row-pad: 10px;
   }
