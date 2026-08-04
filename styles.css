@@ -1819,6 +1819,14 @@ button.badge:hover {
   overflow-wrap: anywhere;
 }
 
+.file-retry {
+  flex: none;
+}
+
+.file-retry[hidden] {
+  display: none;
+}
+
 .footer-button {
   flex: none;
   padding: 5px 12px;

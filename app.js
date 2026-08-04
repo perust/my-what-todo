@@ -48,6 +48,7 @@
   const importButton = document.getElementById('import-data');
   const fileConnectButton = document.getElementById('file-connect');
   const fileStatus = document.getElementById('file-status');
+  const fileRetryButton = document.getElementById('file-retry');
   const importFile = document.getElementById('import-file');
   const importDialog = document.getElementById('import-dialog');
   const importDialogText = document.getElementById('import-dialog-text');
@@ -2118,18 +2119,33 @@
     if (state.phase === 'connecting') {
       text = '파일 연결 중…';
     } else if (state.phase === 'connected') {
-      text = `${state.fileName} 연결됨 · 마지막 저장 ${formatter(state.lastSavedAt)}`;
+      const lastSuccess = state.lastSavedAt === null
+        ? '아직 성공 기록 없음'
+        : `${state.saveError ? '마지막 성공' : '마지막 저장'} ${formatter(state.lastSavedAt)}`;
+      text = state.saveError
+        ? `${state.fileName} 연결됨 · 저장 실패 · ${lastSuccess}`
+        : `${state.fileName} 연결됨 · ${lastSuccess}`;
     }
 
     setText(fileStatus, text);
     fileConnectButton.disabled = state.phase === 'connecting';
     setText(fileConnectButton, state.phase === 'connected' ? '파일 다시 연결' : '파일 연결');
+    fileRetryButton.hidden = !(state.phase === 'connected' && state.saveError);
+    fileRetryButton.disabled = !!state.retrying;
+    setText(fileRetryButton, state.retrying ? '재시도 중…' : '재시도');
   }
 
   FileSync.setErrorHandler(() => {
     showNotice('연결한 파일에 저장하지 못했습니다. 브라우저 저장 내용은 그대로 유지됩니다.');
   });
   FileSync.setStatusHandler(renderFileStatus);
+
+  fileRetryButton.addEventListener('click', async () => {
+    const success = await FileSync.retry();
+    showNotice(success
+      ? '파일 저장을 다시 완료했습니다.'
+      : '파일 저장 재시도에 실패했습니다.');
+  });
 
   fileConnectButton.addEventListener('click', async () => {
     if (!FileSync.isSupported()) {

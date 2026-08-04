@@ -21,28 +21,41 @@
   let phase = 'disconnected';
   let fileName = null;
   let lastSavedAt = null;
+  let generation = 0;
+  let failedRecord = null;
+  let retrying = false;
+  let retryPromise = null;
 
   const serialize = (snapshot) => JSON.stringify(snapshot, null, 2);
 
   function getState() {
-    return Object.freeze({ phase, fileName, lastSavedAt });
+    return Object.freeze({
+      phase,
+      fileName,
+      lastSavedAt,
+      saveError: failedRecord !== null && failedRecord.handle === handle,
+      retrying
+    });
   }
 
-  function publish(nextPhase, nextFileName = fileName, nextLastSavedAt = lastSavedAt) {
-    if (
-      phase === nextPhase &&
-      fileName === nextFileName &&
-      lastSavedAt === nextLastSavedAt
-    ) return;
-
-    phase = nextPhase;
-    fileName = nextFileName;
-    lastSavedAt = nextLastSavedAt;
+  function publishState() {
     try {
       onStatus(getState());
     } catch (ignored) {
       // 상태 표시 코드의 실패가 파일 저장을 끊어서는 안 된다.
     }
+  }
+
+  function publish(nextPhase, nextFileName = fileName, nextLastSavedAt = lastSavedAt) {
+    const changed =
+      phase !== nextPhase ||
+      fileName !== nextFileName ||
+      lastSavedAt !== nextLastSavedAt;
+    phase = nextPhase;
+    fileName = nextFileName;
+    lastSavedAt = nextLastSavedAt;
+    if (changed) publishState();
+    return changed;
   }
 
   const safeFileName = (candidate) =>
@@ -114,21 +127,20 @@
     }
 
     try {
-      // picker를 기다리는 동안 save가 먼저 들어왔다면 그 최신 스냅샷을 사용한다.
       if (pending.version === 0) {
         const snapshot = typeof getSnapshot === 'function' ? getSnapshot() : getSnapshot;
         pending.latestText = serialize(snapshot);
         pending.version += 1;
       }
 
-      // 쓰는 동안 save가 들어오면 새 버전을 다시 쓴다. 마지막 확인과 handle 교체
-      // 사이에는 await가 없어 JS 이벤트 루프에서 변경을 놓치지 않는다.
+      // 후보가 picker/write를 기다리는 동안 들어온 최신 스냅샷까지 모두 drain한다.
       while (true) {
         const version = pending.version;
         const text = pending.latestText;
         const savedAt = await enqueue(candidate, text);
         if (pending.version === version) {
           handle = candidate;
+          failedRecord = null;
           publish('connected', safeFileName(candidate), savedAt);
           pending.finish(true);
           return 'connected';
@@ -148,10 +160,18 @@
     if (currentHandle === null && pending === null) return Promise.resolve(false);
 
     let text;
+    let currentGeneration;
     try {
-      // 큐에 객체를 넣지 않고 지금 문자열로 고정해야 호출 뒤의 변경이 섞이지 않는다.
+      // 호출 순간 immutable JSON text와 세대를 함께 고정한다.
       text = serialize(snapshot);
+      currentGeneration = ++generation;
     } catch (error) {
+      // 더 최신 상태를 JSON text로 고정하지 못했으면 현재 파일의 과거 실패본을
+      // 다시 쓸 수 없다. 다른 handle에 묶인 실패 레코드는 건드리지 않는다.
+      if (failedRecord?.handle === currentHandle) {
+        failedRecord = null;
+        publishState();
+      }
       report(error);
       return Promise.resolve(false);
     }
@@ -161,21 +181,78 @@
       pending.version += 1;
     }
 
-    // 첫 연결 중 save는 후보 연결의 성공/실패와 함께 정직하게 완료한다.
     if (currentHandle === null) return pending.completion;
 
-    // 재연결 중에도 기존 연결에는 계속 저장한다. 후보 실패 시에도 최신 상태가 남는다.
     return enqueue(currentHandle, text).then(
       (savedAt) => {
-        // 재연결이 먼저 성공했다면 뒤늦게 끝난 옛 핸들의 저장 시각으로 역행하지 않는다.
-        if (handle === currentHandle) publish(phase, fileName, savedAt);
+        if (handle === currentHandle) {
+          let cleared = false;
+          if (
+            failedRecord?.handle === currentHandle &&
+            failedRecord.generation <= currentGeneration
+          ) {
+            failedRecord = null;
+            cleared = true;
+          }
+          const published = publish(phase, fileName, savedAt);
+          // 테스트 시계가 같아 시각이 그대로여도 오류 해제는 공개한다.
+          if (cleared && !published) publishState();
+        }
         return true;
       },
       (error) => {
-        report(error);
+        if (handle === currentHandle) {
+          const firstInEpisode =
+            failedRecord === null || failedRecord.handle !== currentHandle;
+          failedRecord = Object.freeze({
+            handle: currentHandle,
+            text,
+            generation: currentGeneration
+          });
+          publishState();
+          if (firstInEpisode) report(error);
+        } else {
+          report(error);
+        }
         return false;
       }
     );
+  }
+
+  function retry() {
+    if (retryPromise !== null) return retryPromise;
+    if (handle === null || failedRecord === null || failedRecord.handle !== handle) {
+      return Promise.resolve(false);
+    }
+
+    retrying = true;
+    publishState();
+
+    // 실행 시점의 실패 레코드를 읽는다. 앞서 queue에 들어온 더 최신 save가 실패하면
+    // 그 text를 쓰며, 성공해 오류가 풀렸다면 오래된 text를 다시 쓰지 않는다.
+    const job = tail.then(async () => {
+      const record = failedRecord;
+      if (record === null || record.handle !== handle) return true;
+      const savedAt = await writeFile(record.handle, record.text);
+      if (failedRecord === record && handle === record.handle) {
+        failedRecord = null;
+        const published = publish(phase, fileName, savedAt);
+        if (!published) publishState();
+      }
+      return true;
+    });
+    tail = job.catch(() => {});
+
+    retryPromise = job.then(
+      (result) => result,
+      () => false
+    ).then((result) => {
+      retrying = false;
+      retryPromise = null;
+      publishState();
+      return result;
+    });
+    return retryPromise;
   }
 
   function setErrorHandler(handler) {
@@ -184,14 +261,10 @@
 
   function setStatusHandler(handler) {
     onStatus = typeof handler === 'function' ? handler : () => {};
-    try {
-      onStatus(getState());
-    } catch (ignored) {
-      // 등록 직후 렌더 실패도 저장 기능과 분리한다.
-    }
+    publishState();
   }
 
   globalThis.FileSync = Object.freeze({
-    connect, save, isSupported, getState, setErrorHandler, setStatusHandler
+    connect, save, retry, isSupported, getState, setErrorHandler, setStatusHandler
   });
 })();

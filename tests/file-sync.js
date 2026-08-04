@@ -42,7 +42,10 @@ function test(name, fn) { tests.push({ name, fn }); }
 test('초기 상태는 외부에서 바꿀 수 없는 disconnected 스냅샷이다', () => {
   const FileSync = loadFileSync();
   const first = FileSync.getState();
-  assert.deepEqual({ ...first }, { phase: 'disconnected', fileName: null, lastSavedAt: null });
+  assert.deepEqual({ ...first }, {
+    phase: 'disconnected', fileName: null, lastSavedAt: null,
+    saveError: false, retrying: false
+  });
   assert.equal(Object.isFrozen(first), true);
   assert.throws(() => { first.phase = 'connected'; }, TypeError);
   assert.notEqual(FileSync.getState(), first);
@@ -62,7 +65,8 @@ test('연결 중 상태를 알리고 initial write+close 성공 뒤 실제 이�
   releasePicker();
   assert.equal(await connecting, 'connected');
   assert.deepEqual({ ...FileSync.getState() }, {
-    phase: 'connected', fileName: '오늘 할 일.json', lastSavedAt: 1_234
+    phase: 'connected', fileName: '오늘 할 일.json', lastSavedAt: 1_234,
+    saveError: false, retrying: false
   });
   assert.deepEqual(states.map((state) => state.phase), ['disconnected', 'connecting', 'connected']);
 });
@@ -91,7 +95,8 @@ test('save 실패는 기존 마지막 성공 저장 시각을 바꾸지 않는�
   fail = true;
   assert.equal(await FileSync.save({ step: 1 }), false);
   assert.deepEqual({ ...FileSync.getState() }, {
-    phase: 'connected', fileName: 'kept.json', lastSavedAt: 100
+    phase: 'connected', fileName: 'kept.json', lastSavedAt: 100,
+    saveError: true, retrying: false
   });
 });
 
@@ -108,7 +113,8 @@ test('취소한 재연결은 기존 파일 이름과 마지막 성공 시각으�
   cancel = true;
   assert.equal(await FileSync.connect(() => ({ step: 1 })), 'cancelled');
   assert.deepEqual({ ...FileSync.getState() }, {
-    phase: 'connected', fileName: 'original.json', lastSavedAt: 300
+    phase: 'connected', fileName: 'original.json', lastSavedAt: 300,
+    saveError: false, retrying: false
   });
 });
 
@@ -121,7 +127,8 @@ test('후보 쓰기에 실패한 재연결은 기존 파일 이름과 마지막 
   picked = broken;
   assert.equal(await FileSync.connect(() => ({ step: 1 })), 'error');
   assert.deepEqual({ ...FileSync.getState() }, {
-    phase: 'connected', fileName: 'original.json', lastSavedAt: 400
+    phase: 'connected', fileName: 'original.json', lastSavedAt: 400,
+    saveError: false, retrying: false
   });
 });
 
@@ -207,7 +214,8 @@ test('첫 연결 실패 시 연결 중 save도 false로 완료된다', async () 
   assert.equal(await connecting, 'error');
   assert.equal(await saving, false);
   assert.deepEqual({ ...FileSync.getState() }, {
-    phase: 'disconnected', fileName: null, lastSavedAt: null
+    phase: 'disconnected', fileName: null, lastSavedAt: null,
+    saveError: false, retrying: false
   });
 });
 
@@ -467,7 +475,8 @@ test('재연결 후보 close 실패 뒤에도 기존 handle 저장의 새 성공
   releaseCandidateClose();
   assert.equal(await reconnecting, 'error');
   assert.deepEqual({ ...FileSync.getState() }, {
-    phase: 'connected', fileName: 'original.json', lastSavedAt: 200
+    phase: 'connected', fileName: 'original.json', lastSavedAt: 200,
+    saveError: false, retrying: false
   });
 });
 
@@ -549,7 +558,8 @@ test('status handler 예외와 connecting 재진입에도 큐를 유지하고 �
     assert.equal(await reentrantSave, true);
     assert.equal(writes.at(-1), JSON.stringify({ step: 'latest' }, null, 2));
     assert.deepEqual({ ...FileSync.getState() }, {
-      phase: 'connected', fileName: 'latest.json', lastSavedAt: 1_700_000_000_000
+      phase: 'connected', fileName: 'latest.json', lastSavedAt: 1_700_000_000_000,
+      saveError: false, retrying: false
     });
 
     assert.equal(await FileSync.save({ step: 'after-handler-error' }), true);
@@ -568,6 +578,205 @@ test('악성 형태의 handle.name도 실행하지 않고 파일명 문자열 �
 
   assert.equal(await FileSync.connect(() => ({})), 'connected');
   assert.equal(FileSync.getState().fileName, malicious);
+});
+
+test('close 실패는 최신 실패 스냅샷을 보존하고 retry 성공 시 오류와 시각을 갱신한다', async () => {
+  let now = 100;
+  let fail = false;
+  const writes = [];
+  const handle = {
+    name: 'retry.json',
+    async createWritable() {
+      return {
+        async write(text) { writes.push(text); },
+        async close() { if (fail) throw new Error('close failed'); },
+        async abort() {}
+      };
+    }
+  };
+  const FileSync = loadFileSync({ picker: async () => handle, now: () => now });
+  await FileSync.connect(() => ({ step: 0 }));
+  fail = true;
+  assert.equal(await FileSync.save({ step: 1 }), false);
+  assert.equal(FileSync.getState().saveError, true);
+  assert.equal(FileSync.getState().lastSavedAt, 100);
+  fail = false;
+  now = 200;
+  assert.equal(await FileSync.retry(), true);
+  assert.equal(writes.at(-1), JSON.stringify({ step: 1 }, null, 2));
+  assert.equal(FileSync.getState().saveError, false);
+  assert.equal(FileSync.getState().lastSavedAt, 200);
+});
+
+test('연속 실패 A/B 뒤 retry는 최신 B만 최종 파일에 쓴다', async () => {
+  let fail = false;
+  const writes = [];
+  const handle = { async createWritable() { return {
+    async write(text) { if (fail) throw new Error('full'); writes.push(text); },
+    async close() {}, async abort() {}
+  }; } };
+  const FileSync = loadFileSync({ picker: async () => handle });
+  await FileSync.connect(() => ({ step: 0 }));
+  fail = true;
+  await FileSync.save({ step: 'A' });
+  await FileSync.save({ step: 'B' });
+  fail = false;
+  assert.equal(await FileSync.retry(), true);
+  assert.equal(writes.at(-1), JSON.stringify({ step: 'B' }, null, 2));
+});
+
+test('실패 A 뒤 queue의 B 성공은 오류와 retry 상태를 자동 해제한다', async () => {
+  let attempt = 0;
+  const handle = { async createWritable() { const current = ++attempt; return {
+    async write() { if (current === 2) throw new Error('A failed'); },
+    async close() {}, async abort() {}
+  }; } };
+  const FileSync = loadFileSync({ picker: async () => handle });
+  await FileSync.connect(() => ({ step: 0 }));
+  const a = FileSync.save({ step: 'A' });
+  const b = FileSync.save({ step: 'B' });
+  assert.deepEqual(await Promise.all([a, b]), [false, true]);
+  assert.equal(FileSync.getState().saveError, false);
+  assert.equal(await FileSync.retry(), false);
+});
+
+test('retry 실패는 상태를 유지하고 다음 retry 성공으로 queue를 복구한다', async () => {
+  let fail = false;
+  const writes = [];
+  const handle = { async createWritable() { return {
+    async write(text) { if (fail) throw new Error('still full'); writes.push(text); },
+    async close() {}, async abort() {}
+  }; } };
+  const FileSync = loadFileSync({ picker: async () => handle });
+  await FileSync.connect(() => ({ step: 0 }));
+  fail = true;
+  await FileSync.save({ step: 1 });
+  assert.equal(await FileSync.retry(), false);
+  assert.equal(FileSync.getState().saveError, true);
+  fail = false;
+  assert.equal(await FileSync.retry(), true);
+  assert.equal(FileSync.getState().saveError, false);
+  assert.equal(writes.at(-1), JSON.stringify({ step: 1 }, null, 2));
+});
+
+test('retry 더블 호출은 하나로 합치고 새 save와 겹쳐도 최종 파일은 최신이다', async () => {
+  let fail = false;
+  let releaseRetry;
+  let retryStarted = false;
+  const writes = [];
+  const handle = { async createWritable() { return {
+    async write(text) {
+      if (fail) throw new Error('failed');
+      writes.push(text);
+      if (text.includes('failed') && !retryStarted) {
+        retryStarted = true;
+        await new Promise((resolve) => { releaseRetry = resolve; });
+      }
+    },
+    async close() {}, async abort() {}
+  }; } };
+  const FileSync = loadFileSync({ picker: async () => handle });
+  await FileSync.connect(() => ({ step: 0 }));
+  fail = true;
+  await FileSync.save({ step: 'failed' });
+  fail = false;
+  const retry1 = FileSync.retry();
+  const retry2 = FileSync.retry();
+  while (!retryStarted) await new Promise((resolve) => setImmediate(resolve));
+  const latest = FileSync.save({ step: 'latest' });
+  assert.equal(FileSync.getState().retrying, true);
+  releaseRetry();
+  assert.deepEqual(await Promise.all([retry1, retry2, latest]), [true, true, true]);
+  assert.equal(writes.at(-1), JSON.stringify({ step: 'latest' }, null, 2));
+  assert.equal(FileSync.getState().saveError, false);
+});
+
+test('취소/실패 재연결은 old 오류를 보존하고 성공 재연결만 해제한다', async () => {
+  let oldFail = false;
+  const old = { name: 'old.json', async createWritable() { return {
+    async write() { if (oldFail) throw new Error('old failed'); }, async close() {}, async abort() {}
+  }; } };
+  const broken = { name: 'broken.json', async createWritable() { throw new Error('candidate failed'); } };
+  const fresh = writableHandle([], { name: 'fresh.json' });
+  let picked = old;
+  const FileSync = loadFileSync({ picker: async () => {
+    if (picked === 'cancel') throw Object.assign(new Error('cancel'), { name: 'AbortError' });
+    return picked;
+  } });
+  await FileSync.connect(() => ({ step: 0 }));
+  oldFail = true;
+  await FileSync.save({ step: 1 });
+  picked = 'cancel';
+  assert.equal(await FileSync.connect(() => ({ step: 2 })), 'cancelled');
+  assert.equal(FileSync.getState().saveError, true);
+  picked = broken;
+  assert.equal(await FileSync.connect(() => ({ step: 3 })), 'error');
+  assert.equal(FileSync.getState().saveError, true);
+  picked = fresh;
+  assert.equal(await FileSync.connect(() => ({ step: 4 })), 'connected');
+  assert.equal(FileSync.getState().fileName, 'fresh.json');
+  assert.equal(FileSync.getState().saveError, false);
+});
+
+test('첫 연결 오류와 unsupported 상태에는 retry가 없다', async () => {
+  const broken = { async createWritable() { throw new Error('initial failed'); } };
+  const failed = loadFileSync({ picker: async () => broken });
+  assert.equal(await failed.connect(() => ({ step: 0 })), 'error');
+  assert.equal(failed.getState().saveError, false);
+  assert.equal(await failed.retry(), false);
+  const unsupported = loadFileSync();
+  assert.equal(await unsupported.retry(), false);
+  assert.equal(unsupported.getState().saveError, false);
+});
+
+test('public state는 frozen boolean만 공개하고 오류 객체와 실패 JSON text를 숨긴다', async () => {
+  let fail = false;
+  const secret = 'PRIVATE_FAILED_TEXT';
+  const handle = { async createWritable() { return {
+    async write() { if (fail) throw new Error('path:/secret/file'); }, async close() {}, async abort() {}
+  }; } };
+  const FileSync = loadFileSync({ picker: async () => handle });
+  await FileSync.connect(() => ({}));
+  fail = true;
+  await FileSync.save({ secret });
+  const state = FileSync.getState();
+  assert.equal(Object.isFrozen(state), true);
+  assert.equal(state.saveError, true);
+  assert.equal(state.retrying, false);
+  assert.equal(JSON.stringify(state).includes(secret), false);
+  assert.equal(JSON.stringify(state).includes('/secret/file'), false);
+});
+
+test('더 최신 snapshot 직렬화 실패는 현재 handle의 과거 retry를 폐기하고 상태를 다시 알린다', async () => {
+  let failClose = false;
+  const writes = [];
+  const states = [];
+  const handle = { async createWritable() { return {
+    async write(text) { writes.push(text); },
+    async close() { if (failClose) throw new Error('close failed'); },
+    async abort() {}
+  }; } };
+  const FileSync = loadFileSync({ picker: async () => handle });
+  FileSync.setStatusHandler((state) => states.push({ ...state }));
+  await FileSync.connect(() => ({ step: 0 }));
+
+  failClose = true;
+  assert.equal(await FileSync.save({ step: 1 }), false);
+  assert.equal(FileSync.getState().saveError, true);
+  const writesBeforeCircular = writes.length;
+
+  const circular = { step: 2 };
+  circular.self = circular;
+  assert.equal(await FileSync.save(circular), false);
+  failClose = false;
+  const retryResult = await FileSync.retry();
+
+  assert.equal(FileSync.getState().saveError, false);
+  assert.equal(retryResult, false);
+  assert.equal(writes.length, writesBeforeCircular, '과거 step 1을 추가 write하지 않는다');
+  assert.equal(states.at(-1).saveError, false, 'retry UI가 숨도록 상태를 재발행한다');
+  assert.equal(await FileSync.save({ step: 3 }), true);
+  assert.equal(writes.at(-1), JSON.stringify({ step: 3 }, null, 2));
 });
 
 (async () => {
