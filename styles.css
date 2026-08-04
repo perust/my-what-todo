@@ -439,7 +439,9 @@ body {
   color: var(--text);
 }
 
-.pomo-preset.is-active {
+/* 지금 고른 것 하나만 켠다. 직접 입력한 길이일 때는 `설정`이 그 자리를 맡는다. */
+.pomo-preset.is-active,
+.pomo-apply.is-active {
   border-color: var(--focus);
   color: var(--focus);
   font-weight: 600;

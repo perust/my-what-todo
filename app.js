@@ -57,6 +57,7 @@
   const pomoLengths = document.querySelector('.pomo-lengths');
   const pomoCustom = document.getElementById('pomo-custom');
   const pomoInput = document.getElementById('pomo-input');
+  const pomoApply = document.getElementById('pomo-apply');
   const pomoToggle = document.getElementById('pomo-toggle');
   const pomoReset = document.getElementById('pomo-reset');
   const pomoPhase = document.getElementById('pomo-phase');
@@ -623,12 +624,16 @@
     const title = running ? `${clock} · ${BASE_TITLE}` : BASE_TITLE;
     if (document.title !== title) document.title = title;
 
+    // 지금 무엇으로 돌아갈지는 켜진 버튼 하나로 읽는다. 프리셋 중 어느 것도 아니면
+    // 직접 입력한 길이라는 뜻이므로 `설정`을 켠다 — 아무것도 켜져 있지 않으면
+    // 시작을 눌렀을 때 몇 분짜리가 도는지 알 방법이 없다.
+    let onPreset = false;
     for (const preset of document.querySelectorAll('.pomo-preset[data-minutes]')) {
-      preset.classList.toggle(
-        'is-active',
-        !inCycle() && Number(preset.dataset.minutes) * 60 === pomoLength
-      );
+      const active = !inCycle() && Number(preset.dataset.minutes) * 60 === pomoLength;
+      if (active) onPreset = true;
+      preset.classList.toggle('is-active', active);
     }
+    pomoApply.classList.toggle('is-active', !inCycle() && !onPreset);
 
     // 흐른 만큼 원이 채워진다
     const done = pomoLength > 0 ? 1 - pomoLeft / pomoLength : 0;
@@ -1813,6 +1818,9 @@
   // 사이클 — 한 번 누르면 1회차 집중부터 끝까지 이어서 돈다
   pomoCycleButton.addEventListener('click', () => {
     cycleEnter(0, 'focus', true);
+    // 사이클로 넘어갔으니 직접 입력한 숫자는 더 이상 쓰이지 않는다.
+    // 칸에 남겨두면 그 값으로 도는 줄 안다.
+    pomoInput.value = '';
   });
 
   pomoLengths.addEventListener('click', (e) => {
