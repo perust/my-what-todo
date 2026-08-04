@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 문서 버전 | v3.6 (2026-08-04) — Markdown 외부 변경 감지·충돌 해결 5B |
+| 문서 버전 | v3.7 (2026-08-04) — canonical Markdown 기존 항목 편집 parser 6A |
 | 제품 코드명 | `daily-todo` (화면에 보이는 이름은 **My What Todo**) |
 | 한 줄 요약 | 해야 할 일을 실행 단위로 쪼개 2단계로 관리하고, 우선순위·태그로 추려 보며 완료율을 확인하는 1인용 웹 앱 |
 | 대상 사용자 | 본인 1명 (단일 기기, 단일 브라우저) |
@@ -617,8 +617,8 @@ read→write TOCTOU 경쟁은 남는다. 비교를 `createWritable()` 직전 같
       그리고 파일 끝 newline 하나
 - [ ] 형제는 `order` → `createdAt` → `id` 순으로 정렬하고, 같은 snapshot은 언제나 같은
       bytes를 만든다. 제목·태그·카테고리는 HTML/Markdown으로 실행되지 않게 escape한다
-- [ ] Markdown은 **앱이 정본인 단방향 읽기 전용 보기**다. Markdown 파일의 직접 편집을
-      읽거나 앱에 반영하는 파서와 양방향 동기화는 명시적으로 제외한다
+- [ ] 4단계 연결 runtime은 **앱이 정본인 단방향 보기**다. 6A의 별도 순수 parser를 이
+      연결이나 Store에 호출하는 app/Sync 통합과 양방향 동기화는 6B까지 제외한다
 - [ ] render/write 실패는 LocalStorage 정본과 JSON mirror를 막지 않으며, 실패한 새 연결은
       오래된 후보를 활성화하지 않는다. 기존 연결이 있으면 그 핸들과 마지막 성공 상태를 보존한다
 
@@ -644,8 +644,27 @@ read→write TOCTOU 경쟁은 남는다. 비교를 `createWritable()` 직전 같
 경쟁이 남는다. 비교를 같은 serial job의 쓰기 직전에 두어 창을 줄이지만 **best-effort(최선 노력)**
 보호이며, 외부 프로세스가 그 짧은 사이에 다시 쓰는 경우까지 원자적으로 막지는 못한다.
 
-Markdown 편집을 앱으로 읽는 **6단계 parser/import**는 기존 후속 범위로 남는다. 5B는 외부
-편집을 감지해 앱의 자동 덮어쓰기를 멈출 뿐, Markdown 내용을 가져오거나 양방향 동기화하지 않는다.
+**Canonical Markdown 기존 항목 편집 parser (6A)**
+
+`MarkdownImport.parse(text, currentSnapshot)`는 임의 Markdown reader가 아니다. 현재 snapshot을
+`MarkdownExport.render`한 정본 문서에서 모든 기존 todo ID가 정확히 한 번 남은 제한 편집만
+받고, complete 새 plain snapshot과 항목별 변경 요약을 결정론적으로 만든다.
+
+| 변경 | 6A | 규칙 |
+|---|---:|---|
+| checkbox / P0~P3 / 제목 / 태그 | 지원 | canonical escape 역변환과 제한을 통과해야 함 |
+| 형제 순서 / root 카테고리 이동 | 지원 | 기존 카테고리 절의 순서와 이름은 고정 |
+| 기존 ID의 root↔child 재배치 | 지원 | root 0칸, child 2칸, 최대 2단계 |
+| todo 추가·삭제 | 거부 | unknown·duplicate·missing ID 모두 typed error |
+| 카테고리 추가·삭제·이름/순서 변경 | 거부 | 현재 heading exact-once/order |
+| theme/sort/pomodoro/version/category metadata | 거부 | 결과에는 현재 값을 exact clone으로 보존 |
+| 기타 절·임의 section/문장/Markdown | 거부 | canonical grammar 밖의 입력은 fail-closed |
+
+파서는 current plain graph와 스키마를 accessor 실행 없이 strict 검증하고, 입력 크기를 현재
+canonical bytes와 todo 수에 비례해 제한한다. ID와 escape는 canonical roundtrip을 요구하며,
+마지막에는 반드시 `MarkdownExport.render(data) === text`를 확인한다. 오류는 raw 행·값·외부 ID를
+담지 않는 고정 한국어 `MarkdownImportError`다. 6A script는 export와 sync 사이에 로드하지만
+app/Store/Sync는 호출하지 않는다. 실제 가져오기 UI·충돌 해결·양방향 runtime 연결은 **6B 후속 범위**다.
 
 ### F-19. 정렬 옵션
 

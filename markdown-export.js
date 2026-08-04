@@ -255,5 +255,5 @@ format_version: 1
     return `${lines.join('\n').replace(/\n+$/u, '')}\n`;
   }
 
-  globalThis.MarkdownExport = Object.freeze({ render });
+  globalThis.MarkdownExport = Object.freeze({ render, escapeText });
 })();
