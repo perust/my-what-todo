@@ -16,12 +16,14 @@ function storage() {
   };
 }
 
-function loadStore() {
+function loadStore(options = {}) {
   let nextId = 0;
+  const localStorage = storage();
+  const sessionStorage = storage();
   const sandbox = {
     console,
-    localStorage: storage(),
-    sessionStorage: storage(),
+    localStorage,
+    sessionStorage,
     crypto: { randomUUID: () => `generated-${++nextId}` },
     Date,
     Math,
@@ -32,6 +34,7 @@ function loadStore() {
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'parse.js'), 'utf8'), sandbox, { filename: 'parse.js' });
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'store.js'), 'utf8'), sandbox, { filename: 'store.js' });
+  if (options.context) return { Store: sandbox.Store, localStorage, sessionStorage };
   return sandbox.Store;
 }
 
@@ -71,17 +74,8 @@ function todo(id, fields = {}) {
   };
 }
 
-const failures = [];
-
-function test(name, fn) {
-  try {
-    fn();
-    console.log(`ok - ${name}`);
-  } catch (error) {
-    failures.push({ name, error });
-    console.error(`not ok - ${name}: ${error.message}`);
-  }
-}
+const tests = [];
+function test(name, fn) { tests.push({ name, fn }); }
 
 test('가져오기 카테고리 이름은 연속 공백을 압축한 뒤 중복 제거한다', () => {
   const Store = loadStore();
@@ -302,15 +296,16 @@ function makeDocument() {
   return document;
 }
 
-function loadApp() {
+function loadApp(options = {}) {
   const document = makeDocument();
   const restored = [];
   const fileSnapshots = [];
   let fileStatusHandler = null;
+  let retryCalls = 0;
   let loadCount = 0;
   let importCount = 0;
   const categories = [{ id: 'work', name: '업무', hue: 220 }];
-  const Store = {
+  const mockStore = {
     STORAGE_KEY: 'daily-todo:v1', PRIORITIES: [0, 1, 2, 3], SORTS: ['priority', 'manual'],
     MAX_TITLE: 100, MAX_CATEGORY_NAME: 12, MAX_CATEGORIES: 64,
     POMO_ROUNDS: 4, POMO_MIN_MINUTES: 1, POMO_MAX_MINUTES: 180,
@@ -332,6 +327,7 @@ function loadApp() {
     importData() { importCount += 1; return { todos: 1, categories: 1 }; },
     restore(items) { restored.push(items.map((item) => ({ ...item }))); return items; }
   };
+  const Store = options.Store ?? mockStore;
   const timers = new Map();
   let nextTimer = 0;
   const globalListeners = new Map();
@@ -340,11 +336,15 @@ function loadApp() {
     FileSync: {
       isSupported() { return true; },
       async connect() { return 'connected'; },
-      save(snapshot) { fileSnapshots.push(snapshot); return Promise.resolve(true); },
+      save(snapshot) { fileSnapshots.push(snapshot); return Promise.resolve(options.saveResult ?? true); },
+      async retry() { retryCalls += 1; return options.retryResult ?? true; },
       setErrorHandler() {},
       setStatusHandler(handler) {
         fileStatusHandler = handler;
-        handler({ phase: 'disconnected', fileName: null, lastSavedAt: null });
+        handler({
+          phase: 'disconnected', fileName: null, lastSavedAt: null,
+          saveError: false, retrying: false
+        });
       }
     },
     Parse: { parseInput: () => ({ title: '', priority: null, tags: [] }) },
@@ -380,6 +380,7 @@ function loadApp() {
   return {
     sandbox, document, Store, restored, fileSnapshots, timers,
     emitFileStatus(state) { fileStatusHandler(state); },
+    get retryCalls() { return retryCalls; },
     get loadCount() { return loadCount; }, get importCount() { return importCount; }
   };
 }
@@ -468,6 +469,37 @@ test('saved 성공 경계는 변경 직후의 Store 스냅샷을 파일 동기�
   assert.equal(app.fileSnapshots.length, 1);
 });
 
+test('파일 mirror 실패여도 실제 LocalStorage 정본과 Store mutation 결과를 롤백하지 않는다', async () => {
+  const { Store, localStorage } = loadStore({ context: true });
+  const result = Store.add({
+    title: '로컬 정본 유지', priority: 1, tags: ['local-first']
+  }, 'work');
+  assert.ok(result);
+
+  const key = Store.STORAGE_KEY;
+  const persistedBeforeSaved = localStorage.getItem(key);
+  assert.ok(persistedBeforeSaved);
+  assert.equal(JSON.parse(persistedBeforeSaved).todos.some((item) => item.id === result.id), true);
+  assert.equal(Store.exportData().todos.some((item) => item.id === result.id), true);
+
+  const app = loadApp({ Store, saveResult: false });
+  app.sandbox.__appTest.render();
+  const list = app.document.getElementById('todo-list');
+  assert.equal(list.textContent.includes('로컬 정본 유지'), true);
+
+  assert.equal(app.sandbox.__appTest.saved(result), result);
+  assert.equal(app.fileSnapshots[0].todos.some((item) => item.id === result.id), true,
+    'saved 경계가 실제 Store 정본을 mirror한다');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(Store.getItem(result.id).id, result.id);
+  assert.equal(Store.exportData().todos.some((item) => item.id === result.id), true);
+  assert.equal(localStorage.getItem(key), persistedBeforeSaved);
+  assert.equal(JSON.parse(localStorage.getItem(key)).todos.some((item) => item.id === result.id), true);
+  assert.equal(list.textContent.includes('로컬 정본 유지'), true);
+  assert.equal(app.document.getElementById('toast').textContent, '');
+});
+
 test('파일 상태 UI는 변경된 문자열만 쓰고 연결 중 버튼을 잠근 뒤 연결 후 다시 연결로 바꾼다', () => {
   const app = loadApp();
   const status = app.document.getElementById('file-status');
@@ -526,9 +558,81 @@ test('좁은 footer에서 파일 상태는 남은 폭으로 줄고 긴 파일명
   assert.match(footerButton, /\bflex\s*:\s*none\s*;/);
 });
 
-if (failures.length) {
-  console.error(`${failures.length} regression test(s) failed`);
-  process.exitCode = 1;
-} else {
-  console.log('all regression tests passed');
-}
+test('파일 실패 상태는 안전한 마지막 성공 문구와 retry 표시를 렌더한다', () => {
+  const app = loadApp();
+  const retry = app.document.getElementById('file-retry');
+  app.sandbox.__appTest.renderFileStatus({
+    phase: 'connected', fileName: 'todos.json', lastSavedAt: null,
+    saveError: true, retrying: false
+  });
+  assert.equal(app.document.getElementById('file-status').textContent,
+    'todos.json 연결됨 · 저장 실패 · 아직 성공 기록 없음');
+  assert.equal(retry.hidden, false);
+  assert.equal(retry.disabled, false);
+  assert.equal(retry.textContent, '재시도');
+
+  app.sandbox.__appTest.renderFileStatus({
+    phase: 'connected', fileName: 'todos.json', lastSavedAt: 123,
+    saveError: true, retrying: true
+  }, () => '10:23:45');
+  assert.equal(app.document.getElementById('file-status').textContent,
+    'todos.json 연결됨 · 저장 실패 · 마지막 성공 10:23:45');
+  assert.equal(retry.disabled, true);
+  assert.equal(retry.textContent, '재시도 중…');
+});
+
+test('retry 버튼은 성공/실패 결과를 알리고 상태 없을 때 숨는다', async () => {
+  const success = loadApp({ retryResult: true });
+  const successRetry = success.document.getElementById('file-retry');
+  success.emitFileStatus({
+    phase: 'connected', fileName: 'a.json', lastSavedAt: 1,
+    saveError: true, retrying: false
+  });
+  successRetry.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(success.retryCalls, 1);
+  assert.equal(success.document.getElementById('toast').textContent, '파일 저장을 다시 완료했습니다.');
+
+  const failure = loadApp({ retryResult: false });
+  const failureRetry = failure.document.getElementById('file-retry');
+  failure.emitFileStatus({
+    phase: 'connected', fileName: 'b.json', lastSavedAt: 1,
+    saveError: true, retrying: false
+  });
+  failureRetry.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(failure.document.getElementById('toast').textContent, '파일 저장 재시도에 실패했습니다.');
+
+  failure.emitFileStatus({
+    phase: 'connected', fileName: 'b.json', lastSavedAt: 2,
+    saveError: false, retrying: false
+  });
+  assert.equal(failureRetry.hidden, true);
+});
+
+test('정적 retry 버튼은 status 밖에 있어 중복 낭독하지 않고 좁은 footer에서 줄지 않는다', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  assert.match(html, /<span id="file-status"[^>]*role="status"[^>]*>[^<]*<\/span>\s*<button[^>]*id="file-retry"[^>]*hidden/);
+  const retryButton = /\.file-retry\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(retryButton, /\bflex\s*:\s*none\s*;/);
+});
+
+(async () => {
+  let failures = 0;
+  for (const { name, fn } of tests) {
+    try {
+      await fn();
+      console.log(`ok - ${name}`);
+    } catch (error) {
+      failures += 1;
+      console.error(`not ok - ${name}: ${error.stack || error.message}`);
+    }
+  }
+  if (failures) {
+    console.error(`${failures} regression test(s) failed`);
+    process.exitCode = 1;
+  } else {
+    console.log('all regression tests passed');
+  }
+})();
