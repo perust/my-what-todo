@@ -51,6 +51,7 @@
   const importDialogText = document.getElementById('import-dialog-text');
   const helpButton = document.getElementById('help-button');
   const loginButton = document.getElementById('login-button');
+  const loginDialog = document.getElementById('login-dialog');
   const helpDialog = document.getElementById('help-dialog');
   const pomoButton = document.getElementById('pomo-button');
   const pomoPanel = document.getElementById('pomodoro');
@@ -1824,15 +1825,20 @@
   });
 
   /**
-   * 로그인할 대상이 아직 없다. 자리만 먼저 잡아둔 버튼이라, 누른 사람에게
-   * **지금 데이터가 어디 있는지**까지 함께 알린다. "준비 중"만 말하면
-   * 그동안 내 할 일이 어딘가 서버에 있는 줄 알 수 있다.
+   * 로그인 화면을 연다. 인증할 서버는 아직 없고, 화면 안의 입력 칸은 잠겨 있다.
+   * 무엇이 준비 중이고 지금 데이터가 어디 있는지는 그 화면이 직접 말한다.
    */
   loginButton.addEventListener('click', () => {
-    showNotice('로그인은 아직 준비 중입니다. 지금은 할 일이 이 브라우저에만 저장됩니다.');
+    if (!loginDialog.open) loginDialog.showModal();
   });
 
-  for (const dialog of [helpDialog, clearDialog, importDialog]) closeOnOutsideClick(dialog);
+  loginDialog.addEventListener('click', (e) => {
+    if (e.target.closest('[data-choice="close"]')) loginDialog.close();
+  });
+
+  for (const dialog of [helpDialog, loginDialog, clearDialog, importDialog]) {
+    closeOnOutsideClick(dialog);
+  }
 
   // ── 뽀모도로 ────────────────────────────────────────────
 
