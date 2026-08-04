@@ -53,6 +53,8 @@
   const fileConflictDialog = document.getElementById('file-conflict-dialog');
   const markdownConnectButton = document.getElementById('markdown-connect');
   const markdownStatus = document.getElementById('markdown-status');
+  const markdownConflictResolveButton = document.getElementById('markdown-conflict-resolve');
+  const markdownConflictDialog = document.getElementById('markdown-conflict-dialog');
   const importFile = document.getElementById('import-file');
   const importDialog = document.getElementById('import-dialog');
   const importDialogText = document.getElementById('import-dialog-text');
@@ -1948,7 +1950,9 @@
     if (e.target.closest('[data-choice="close"]')) loginDialog.close();
   });
 
-  for (const dialog of [helpDialog, loginDialog, clearDialog, importDialog, fileConflictDialog]) {
+  for (const dialog of [
+    helpDialog, loginDialog, clearDialog, importDialog, fileConflictDialog, markdownConflictDialog
+  ]) {
     closeOnOutsideClick(dialog);
   }
 
@@ -2058,13 +2062,19 @@
   function requestExternalCheck() {
     if (externalCheckPending) return;
     externalCheckPending = true;
-    try {
-      Promise.resolve(FileSync.checkExternal()).catch(() => {}).finally(() => {
-        externalCheckPending = false;
-      });
-    } catch (ignored) {
+    const safelyCheck = (sync) => {
+      try {
+        return Promise.resolve(sync.checkExternal());
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    };
+    Promise.allSettled([
+      safelyCheck(FileSync),
+      safelyCheck(MarkdownSync)
+    ]).then(() => {
       externalCheckPending = false;
-    }
+    });
   }
 
   // 배경 탭에서는 인터벌이 느려진다. 돌아오면 곧바로 다시 맞춘다.
@@ -2198,21 +2208,33 @@
       const saved = state.lastSavedAt === null
         ? '아직 성공 기록 없음'
         : `${state.saveError ? '마지막 성공' : '마지막 저장'} ${formatter(state.lastSavedAt)}`;
-      text = state.saveError
-        ? `Markdown 저장 실패 · ${saved}`
-        : `${state.fileName} Markdown 연결됨 · ${saved}`;
+      if (state.conflict) {
+        text = `${state.fileName} Markdown 연결됨 · 외부 변경 감지 · 자동 저장 중지`;
+      } else if (state.checkError) {
+        text = `${state.fileName} Markdown 연결됨 · 외부 변경 확인 실패 · 자동 저장 보류`;
+      } else {
+        text = state.saveError
+          ? `Markdown 저장 실패 · ${saved}`
+          : `${state.fileName} Markdown 연결됨 · ${saved}`;
+      }
     }
 
     setText(markdownStatus, text);
-    markdownConnectButton.disabled = state.phase === 'connecting';
+    markdownConnectButton.disabled = state.phase === 'connecting' || !!state.forcing;
     setText(
       markdownConnectButton,
       state.phase === 'connected' ? 'Markdown 다시 연결' : 'Markdown 연결'
     );
+    markdownConflictResolveButton.hidden = !(state.phase === 'connected' && state.conflict);
+    markdownConflictResolveButton.disabled = !!state.forcing;
+    setText(markdownConflictResolveButton, state.forcing ? '해결 중…' : 'Markdown 충돌 해결');
   }
 
   MarkdownSync.setErrorHandler(() => {
-    showNotice('Markdown 파일에 저장하지 못했습니다. 브라우저와 JSON 저장 내용은 그대로 유지됩니다.');
+    const state = MarkdownSync.getState();
+    showNotice(state.checkError
+      ? '연결한 Markdown 파일의 외부 변경 여부를 확인하지 못했습니다. 브라우저와 JSON 저장 내용은 그대로 유지됩니다.'
+      : 'Markdown 파일에 저장하지 못했습니다. 브라우저와 JSON 저장 내용은 그대로 유지됩니다.');
   });
   MarkdownSync.setStatusHandler(renderMarkdownStatus);
 
@@ -2260,6 +2282,47 @@
         showNotice('파일 작업이 진행 중입니다. 끝난 뒤 다시 선택해 주세요.');
       } else {
         showNotice('외부 파일 유지에 실패했습니다. 충돌은 그대로 유지됩니다.');
+      }
+    }
+  });
+
+  markdownConflictResolveButton.addEventListener('click', () => {
+    if (!markdownConflictDialog.open) markdownConflictDialog.showModal();
+  });
+
+  markdownConflictDialog.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-choice]');
+    if (!button) return;
+    const choice = button.dataset.choice;
+    markdownConflictDialog.close();
+    if (choice === 'cancel') return;
+
+    if (choice === 'force') {
+      let success = false;
+      try {
+        success = await MarkdownSync.forceOverwrite(() => Store.exportData());
+      } catch (ignored) {
+        // MarkdownSync 경계와 별개로 UI에서도 rejection을 흡수한다.
+      }
+      showNotice(success
+        ? '앱의 최신 내용으로 Markdown 파일을 덮어썼습니다.'
+        : '덮어쓰지 못했습니다. Markdown 외부 변경 충돌은 그대로 유지됩니다.');
+      return;
+    }
+
+    if (choice === 'keep') {
+      let result = false;
+      try {
+        result = await MarkdownSync.keepExternal();
+      } catch (ignored) {
+        // 위와 같은 rejection 경계다.
+      }
+      if (result === 'disconnected') {
+        showNotice('외부 파일을 유지하고 Markdown 연결을 해제했습니다.');
+      } else if (result === 'busy') {
+        showNotice('Markdown 파일 작업이 진행 중입니다. 끝난 뒤 다시 선택해 주세요.');
+      } else {
+        showNotice('외부 Markdown 파일 유지에 실패했습니다. 충돌은 그대로 유지됩니다.');
       }
     }
   });

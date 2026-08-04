@@ -379,7 +379,11 @@
           enterConflict(checkedHandle, null, generation);
           return 'conflict';
         }
-        if (failedRecord?.handle === checkedHandle && failedRecord.kind === 'check') {
+        if (
+          failedRecord?.handle === checkedHandle &&
+          failedRecord.kind === 'check' &&
+          failedRecord.text === null
+        ) {
           failedRecord = null;
           publishState();
         }
@@ -387,14 +391,24 @@
       } catch (error) {
         if (handle === checkedHandle) {
           const kind = 'check';
+          const existing = failedRecord?.handle === checkedHandle ? failedRecord : null;
           const firstInEpisode =
-            failedRecord === null || failedRecord.handle !== checkedHandle || failedRecord.kind !== kind;
-          failedRecord = Object.freeze({
-            handle: checkedHandle,
-            text: null,
-            generation,
-            kind
-          });
+            existing === null || existing.kind !== kind;
+          if (existing === null || existing.text === null) {
+            failedRecord = Object.freeze({
+              handle: checkedHandle,
+              text: null,
+              generation,
+              kind
+            });
+          } else if (existing.kind !== kind) {
+            failedRecord = Object.freeze({
+              handle: existing.handle,
+              text: existing.text,
+              generation: existing.generation,
+              kind
+            });
+          }
           publishState();
           if (firstInEpisode) report(reportedError(error));
         }
