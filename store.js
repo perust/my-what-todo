@@ -82,6 +82,8 @@
   ];
 
   const defaultCategories = () => DEFAULT_CATEGORIES.map((c) => ({ ...c }));
+  const normalizeCategoryName = (name) =>
+    typeof name === 'string' ? name.trim().replace(/\s+/g, ' ') : '';
 
   /** 평평한 배열 + parentId. 중첩 객체로 저장하지 않는다. (PRD §5) */
   let todos = [];
@@ -418,13 +420,13 @@
       if (out.length >= MAX_CATEGORIES) break;
       if (!raw || typeof raw !== 'object') continue;
       if (typeof raw.id !== 'string' || !raw.id || seenIds.has(raw.id)) continue;
-      if (typeof raw.name !== 'string' || !raw.name.trim()) continue;
+      const name = normalizeCategoryName(raw.name).slice(0, MAX_CATEGORY_NAME);
+      if (!name) continue;
 
       // 이름은 목록 안에서 유일해야 한다 (PRD §5). 색은 자동으로 배정되므로 이름까지 같으면
       // 배지만 보고는 어느 쪽인지 가릴 방법이 없다. addCategory·renameCategory가 막는 것을
       // 로드·가져오기 경로도 똑같이 막는다. 자른 뒤의 이름으로 비교해야 12자 너머에서만
       // 다른 이름이 화면에서 같아 보이는 것까지 걸린다.
-      const name = raw.name.trim().slice(0, MAX_CATEGORY_NAME);
       if (seenNames.has(name)) continue;
 
       seenIds.add(raw.id);
@@ -1025,7 +1027,7 @@
     },
 
     addCategory(name) {
-      const label = typeof name === 'string' ? name.trim().replace(/\s+/g, ' ') : '';
+      const label = normalizeCategoryName(name);
       if (!label || label.length > MAX_CATEGORY_NAME) return null;
       if (categories.some((c) => c.name === label)) return null; // 같은 이름은 구분이 안 된다
       // 로드가 상한 너머를 잘라내므로 여기서도 같은 자리에서 멈춘다.
@@ -1046,7 +1048,7 @@
     renameCategory(id, name) {
       if (!hasCategory(id)) return null;
 
-      const label = typeof name === 'string' ? name.trim().replace(/\s+/g, ' ') : '';
+      const label = normalizeCategoryName(name);
       if (!label || label.length > MAX_CATEGORY_NAME) return null;
       // 자기 이름 그대로면 통과시킨다. 다른 카테고리와 겹치는 것만 막는다.
       if (categories.some((c) => c.id !== id && c.name === label)) return null;
@@ -1193,21 +1195,41 @@
         if (!revived.length) return [];
 
         todos.push(...revived);
-        invalidate();
 
-        // 여기서부터 아래 교정이 끝나기 전에는 색인을 읽는 호출을 끼워 넣으면 안 된다.
-        // invalidate()는 색인을 버릴 뿐이고 다시 만드는 것은 첫 조회다. 교정 앞에서 조회가
-        // 한 번이라도 일어나면 없는 부모를 가리키는 채로 색인이 굳어, 승격된 항목이 상위
-        // 그룹에 들어오지 못하고 사라진 부모 밑에 매달린 채로 남는다.
-        //
-        // 그 사이 부모가 사라졌다면 상위로 승격한다
-        const ids = new Set(todos.map((t) => t.id));
+        // 삭제 뒤 카테고리나 부모가 바뀌었을 수 있다. 되살린 스냅샷의 값을 그대로
+        // 믿으면 없는 카테고리가 다시 생기거나 하위만 옛 카테고리에 남는다.
+        const byId = new Map(todos.map((item) => [item.id, item]));
         for (const item of revived) {
-          if (item.parentId && !ids.has(item.parentId)) item.parentId = null;
+          if (item.parentId !== null && !byId.has(item.parentId)) item.parentId = null;
+          if (item.parentId === null && !hasCategory(item.category)) item.category = categories[0].id;
         }
         for (const item of revived) {
-          if (item.parentId) reconcileParent(find(item.parentId));
+          if (item.parentId !== null) item.category = byId.get(item.parentId).category;
         }
+
+        // 마지막 형제를 지운 뒤 새 항목을 넣으면 둘이 같은 order를 갖는다. 되살린 항목을
+        // 동률의 새 항목 앞에 놓아 원래 자리를 최대한 보존하고, 그룹 전체를 즉시 유일한
+        // 연속 order로 만든다. 그래야 저장 직후와 다음 load() 뒤의 순서가 같다.
+        const revivedAt = new Map(revived.map((item, at) => [item.id, at]));
+        const currentAt = new Map(todos.map((item, at) => [item.id, at]));
+        const affected = new Set(revived.map((item) => item.parentId));
+        for (const parentId of affected) {
+          const group = todos.filter((item) => item.parentId === parentId);
+          group.sort((a, b) => {
+            const byOrder = a.order - b.order;
+            if (byOrder) return byOrder;
+            const aRevived = revivedAt.has(a.id);
+            const bRevived = revivedAt.has(b.id);
+            if (aRevived !== bRevived) return aRevived ? -1 : 1;
+            return aRevived
+              ? revivedAt.get(a.id) - revivedAt.get(b.id)
+              : currentAt.get(a.id) - currentAt.get(b.id);
+          });
+          group.forEach((item, order) => { item.order = order; });
+        }
+
+        invalidate();
+        reconcileAll();
         return revived;
       });
     },
@@ -1277,7 +1299,9 @@
       const counts = new Map();
 
       for (const item of todos) {
-        if (!isVisible(item, scope)) continue;
+        // 검색 때문에 자식의 문맥으로만 보이는 상위는 그 자체가 scope에 맞은 것이 아니다.
+        // 상위의 무관한 태그까지 태그 바에 넣지 않고 직접 맞는 항목만 센다.
+        if (!matchesSelf(item, scope)) continue;
         for (const tag of item.tags) {
           const open = counts.get(tag) ?? 0;
           counts.set(tag, open + (item.completed ? 0 : 1));
