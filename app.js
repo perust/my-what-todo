@@ -47,6 +47,7 @@
   const exportButton = document.getElementById('export-data');
   const importButton = document.getElementById('import-data');
   const fileConnectButton = document.getElementById('file-connect');
+  const fileStatus = document.getElementById('file-status');
   const importFile = document.getElementById('import-file');
   const importDialog = document.getElementById('import-dialog');
   const importDialogText = document.getElementById('import-dialog-text');
@@ -2106,9 +2107,29 @@
 
   // ── 내보내기 / 가져오기 ──────────────────────────────────
 
+  const formatSavedTime = (timestamp) => {
+    const date = new Date(timestamp);
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  };
+
+  function renderFileStatus(state, formatter = formatSavedTime) {
+    let text = '파일 연결 안 됨';
+    if (state.phase === 'connecting') {
+      text = '파일 연결 중…';
+    } else if (state.phase === 'connected') {
+      text = `${state.fileName} 연결됨 · 마지막 저장 ${formatter(state.lastSavedAt)}`;
+    }
+
+    setText(fileStatus, text);
+    fileConnectButton.disabled = state.phase === 'connecting';
+    setText(fileConnectButton, state.phase === 'connected' ? '파일 다시 연결' : '파일 연결');
+  }
+
   FileSync.setErrorHandler(() => {
     showNotice('연결한 파일에 저장하지 못했습니다. 브라우저 저장 내용은 그대로 유지됩니다.');
   });
+  FileSync.setStatusHandler(renderFileStatus);
 
   fileConnectButton.addEventListener('click', async () => {
     if (!FileSync.isSupported()) {

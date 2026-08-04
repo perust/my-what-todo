@@ -223,8 +223,10 @@ class FakeElement {
   }
   set className(value) { this.classList.setFrom(value); }
   get className() { return this.classList.toString(); }
-  set textContent(value) { this._text = String(value); this.childNodes = []; }
+  set textContent(value) { this._textWrites = (this._textWrites || 0) + 1; this._text = String(value); this.childNodes = []; }
   get textContent() { return (this._text || '') + this.childNodes.map((child) => child.textContent || '').join(''); }
+  set innerHTML(value) { this._htmlWrites = (this._htmlWrites || 0) + 1; this._html = String(value); }
+  get innerHTML() { return this._html || ''; }
   get children() { return this.childNodes; }
   appendChild(child) { child.parentNode = this; this.childNodes.push(child); return child; }
   append(...children) { children.forEach((child) => this.appendChild(child)); }
@@ -304,6 +306,7 @@ function loadApp() {
   const document = makeDocument();
   const restored = [];
   const fileSnapshots = [];
+  let fileStatusHandler = null;
   let loadCount = 0;
   let importCount = 0;
   const categories = [{ id: 'work', name: '업무', hue: 220 }];
@@ -338,7 +341,11 @@ function loadApp() {
       isSupported() { return true; },
       async connect() { return 'connected'; },
       save(snapshot) { fileSnapshots.push(snapshot); return Promise.resolve(true); },
-      setErrorHandler() {}
+      setErrorHandler() {},
+      setStatusHandler(handler) {
+        fileStatusHandler = handler;
+        handler({ phase: 'disconnected', fileName: null, lastSavedAt: null });
+      }
     },
     Parse: { parseInput: () => ({ title: '', priority: null, tags: [] }) },
     CSS: { escape: (value) => String(value) },
@@ -362,6 +369,7 @@ function loadApp() {
   source = source.slice(0, end) + `
   globalThis.__appTest = {
     showUndo, showNotice, undo, adoptExternal, render, renderTabs, renderTagBar, setFilter, saved,
+    renderFileStatus,
     setPendingImport(value) { pendingImport = value; },
     setChanging(categoryId, priorityId) { changingCategory = categoryId; changingPriority = priorityId; },
     state() { return { pendingUndo, changingCategory, changingPriority, queuedNotice }; }
@@ -369,7 +377,11 @@ function loadApp() {
 })();\n`;
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox, { filename: 'app.js' });
-  return { sandbox, document, Store, restored, fileSnapshots, timers, get loadCount() { return loadCount; }, get importCount() { return importCount; } };
+  return {
+    sandbox, document, Store, restored, fileSnapshots, timers,
+    emitFileStatus(state) { fileStatusHandler(state); },
+    get loadCount() { return loadCount; }, get importCount() { return importCount; }
+  };
 }
 
 test('연속 삭제는 id 중복 없이 하나의 실행 취소 묶음으로 복원한다', () => {
@@ -454,6 +466,64 @@ test('saved 성공 경계는 변경 직후의 Store 스냅샷을 파일 동기�
 
   app.sandbox.__appTest.saved(null);
   assert.equal(app.fileSnapshots.length, 1);
+});
+
+test('파일 상태 UI는 변경된 문자열만 쓰고 연결 중 버튼을 잠근 뒤 연결 후 다시 연결로 바꾼다', () => {
+  const app = loadApp();
+  const status = app.document.getElementById('file-status');
+  const button = app.document.getElementById('file-connect');
+
+  assert.equal(status.textContent, '파일 연결 안 됨');
+  const writes = status._textWrites;
+  app.emitFileStatus({ phase: 'disconnected', fileName: null, lastSavedAt: null });
+  assert.equal(status._textWrites, writes, '같은 표시 문자열은 textContent를 다시 쓰지 않는다');
+
+  app.emitFileStatus({ phase: 'connecting', fileName: null, lastSavedAt: null });
+  assert.equal(status.textContent, '파일 연결 중…');
+  assert.equal(button.disabled, true);
+
+  app.sandbox.__appTest.renderFileStatus(
+    { phase: 'connected', fileName: 'todos.json', lastSavedAt: 123 },
+    () => '10:23:45'
+  );
+  assert.equal(status.textContent, 'todos.json 연결됨 · 마지막 저장 10:23:45');
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, '파일 다시 연결');
+});
+
+test('악성 형태 파일명은 HTML로 해석하지 않고 파일 상태의 textContent로만 그린다', () => {
+  const malicious = '<img src=x onerror=globalThis.pwned=true>.json';
+  const app = loadApp();
+  const status = app.document.getElementById('file-status');
+  const appSource = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+
+  app.sandbox.__appTest.renderFileStatus(
+    { phase: 'connected', fileName: malicious, lastSavedAt: 123 },
+    () => '고정 시각'
+  );
+
+  assert.equal(status.textContent, `${malicious} 연결됨 · 마지막 저장 고정 시각`);
+  assert.ok(status._textWrites > 0);
+  assert.equal(status._htmlWrites, undefined);
+  assert.equal(status.children.length, 0);
+  assert.doesNotMatch(appSource, /\.innerHTML\s*=/);
+});
+
+test('정적 파일 상태 영역은 중복 live 속성 없이 status 역할을 가진다', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  assert.match(html, /id="file-status"[^>]*role="status"/);
+  assert.doesNotMatch(html, /id="file-status"[^>]*aria-live=/);
+});
+
+test('좁은 footer에서 파일 상태는 남은 폭으로 줄고 긴 파일명을 개행하며 버튼은 줄지 않는다', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
+  const fileStatus = /\.file-status\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  const footerButton = /\.footer-button\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+
+  assert.match(fileStatus, /\bflex\s*:\s*1\s+1\s+0\s*;/);
+  assert.match(fileStatus, /\bmin-width\s*:\s*0\s*;/);
+  assert.match(fileStatus, /\boverflow-wrap\s*:\s*anywhere\s*;/);
+  assert.match(footerButton, /\bflex\s*:\s*none\s*;/);
 });
 
 if (failures.length) {
