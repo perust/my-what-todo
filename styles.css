@@ -1289,6 +1289,22 @@ body {
   cursor: pointer;
 }
 
+/* 마커 자리에 그대로 들어앉는다. 칸보다 넓지만, 열려 있는 동안만이고
+   그 줄만 잠깐 밀린다. 줄 높이가 바뀌면 목록 전체가 출렁이므로 높이는 맞춘다. */
+.todo-priority-select {
+  flex: none;
+  height: 22px;
+  padding: 0 2px;
+  border: 1px solid var(--focus);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 /* 0에만 세로 accent 바를 세운다. 한눈에 걸리는 건 이 하나로 충분하다. */
 .todo-priority::before {
   content: "";

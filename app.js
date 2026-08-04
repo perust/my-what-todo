@@ -10,7 +10,6 @@
   /** 0이 가장 높다. 마커를 누르면 0 → 1 → 2 → 3 → 0으로 돈다. */
   const PRIORITY_LEVELS = [0, 1, 2, 3];
   const priorityLabel = (p) => (p === 0 ? '0 (가장 높음)' : String(p));
-  const nextPriority = (p) => (p + 1) % PRIORITY_LEVELS.length;
 
   const UNDO_MS = 5000;
   const VISIBLE_TAGS = 3; // 이보다 많으면 접는다. 항목에 포커스하면 펼쳐진다.
@@ -104,6 +103,7 @@
   let pendingCategoryRemove = null;
   let renamingCategory = null;
   let changingCategory = null;
+  let changingPriority = null;
 
   /** 파일이 정해진 뒤, 덮어쓰기 전에 백업 여부를 묻는 동안 들고 있는 내용. */
   let pendingImport = null;
@@ -1042,7 +1042,7 @@
 
     const marker = el('button', `todo-priority is-p${item.priority}`);
     marker.type = 'button';
-    marker.dataset.action = 'cycle-priority';
+    marker.dataset.action = 'pick-priority';
     marker.textContent = String(item.priority);
     marker.setAttribute(
       'aria-label',
@@ -1259,7 +1259,7 @@
   function render() {
     // 그 자리에서 고치는 중이면 다시 그리지 않는다. 통째로 헐면 편집기와
     // 고르던 목록이 함께 사라진다.
-    if (editingId !== null || changingCategory !== null) return;
+    if (editingId !== null || changingCategory !== null || changingPriority !== null) return;
 
     // 필터 중인 태그가 사라졌으면 전체로 돌아온다 (F-09).
     // 검색어를 뺀 채로 물어야 한다 — 검색 결과가 0건인 것과 태그가 없어진 것은 다르다.
@@ -1545,6 +1545,69 @@
     picker.addEventListener('focusout', () => finish(false, false));
   }
 
+  /**
+   * 우선순위를 그 자리에서 고른다. 카테고리 배지와 같은 방식이다.
+   *
+   * 예전에는 누를 때마다 0 → 1 → 2 → 3으로 돌았다. 기본 정렬이 우선순위라
+   * **한 번 누를 때마다 목록이 다시 서고 그 항목이 달아났다.** 3에서 0으로 가려면
+   * 세 번을 눌러야 하는데, 두 번째 누를 자리에는 이미 다른 항목이 와 있다.
+   * 한 번에 고르면 정렬도 한 번만 일어난다.
+   */
+  function startPriorityChange(id) {
+    if (changingPriority !== null || changingCategory !== null || editingId !== null) return;
+
+    const item = itemFor(id);
+    const node = nodeFor(id);
+    if (!item || !node) return;
+
+    const marker = node.querySelector('[data-action="pick-priority"]');
+    if (!marker) return;
+
+    const picker = el('select', 'todo-priority-select');
+    picker.setAttribute('aria-label', `우선순위 변경: ${item.title}`);
+
+    // 보이는 것은 숫자만 둔다. 추가 폼의 선택기와 같고, 몇 번 써보면 0이 가장 높다는 것을
+    // 알게 된다. "가장 높음" 같은 꼬리표는 목록 안에서 자리만 넓힌다.
+    for (const level of PRIORITY_LEVELS) {
+      const option = el('option');
+      option.value = String(level);
+      option.textContent = String(level);
+      picker.appendChild(option);
+    }
+    picker.value = String(item.priority);
+
+    changingPriority = id;
+    marker.replaceWith(picker);
+    picker.focus();
+
+    const finish = (save, byKey) => {
+      if (changingPriority !== id) return;
+      changingPriority = null;
+
+      // 같은 값을 다시 골랐으면 저장할 일이 없다. 판 번호만 괜히 올라간다.
+      const next = Number(picker.value);
+      if (save && next !== item.priority) saved(Store.update(id, { priority: next }));
+
+      if (!byKey) {
+        // 제목 편집과 같은 이유로 이 자리만 되돌린다 (startEdit의 주석 참고).
+        picker.replaceWith(marker);
+        renderAfterPress();
+        return;
+      }
+      render();
+      nodeFor(id)?.querySelector('[data-action="pick-priority"]')?.focus();
+    };
+
+    picker.addEventListener('change', () => finish(true, true));
+    picker.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      finish(false, true);
+    });
+    // 고르지 않고 빠져나갔으면 물린다. 골랐다면 change가 이미 끝냈다.
+    picker.addEventListener('focusout', () => finish(false, false));
+  }
+
   // ────────────────────────────────────────────────────────────
   // 삭제 + 실행 취소 (F-04)
   // ────────────────────────────────────────────────────────────
@@ -1715,12 +1778,9 @@
         // Enter/Space로 누른 버튼 클릭은 detail이 0이다 — 마우스와 구분되는 지점.
         handleDelete(id, e.detail === 0);
         break;
-      case 'cycle-priority': {
-        const item = itemFor(id);
-        if (item) saved(Store.update(id, { priority: nextPriority(item.priority) }));
-        render();
+      case 'pick-priority':
+        startPriorityChange(id);
         break;
-      }
       case 'remove-tag': {
         const item = itemFor(id);
         if (item) saved(Store.update(id, { tags: item.tags.filter((t) => t !== trigger.dataset.tag) }));
