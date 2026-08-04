@@ -380,9 +380,15 @@
     비밀번호 관리자가 저장까지 권한다. 화면은 그대로 보여주되 그 위험만 뺀다.
     지금 무엇이 되고 무엇이 안 되는지는 맨 위 한 줄이 말한다.
   -->
-  <dialog id="login-dialog" class="dialog dialog-login" aria-labelledby="login-dialog-title">
+  <!--
+    aria-describedby로 안내 문구를 상자에 묶는다. 이것이 없으면 스크린리더는 열릴 때
+    제목("로그인")과 포커스가 놓인 "닫기"만 읽고 지나간다. 나머지 대화상자는 제목만으로
+    용건이 서지만, 이 상자는 그 한 줄이 전부라 읽히지 않으면 존재 이유가 사라진다.
+  -->
+  <dialog id="login-dialog" class="dialog dialog-login"
+          aria-labelledby="login-dialog-title" aria-describedby="login-dialog-note">
     <h2 id="login-dialog-title" class="dialog-title">로그인</h2>
-    <p class="login-note" role="note">
+    <p id="login-dialog-note" class="login-note">
       아직 준비 중입니다. 화면만 미리 만들어 두었고, 지금은 할 일이 이 브라우저에만 저장됩니다.
     </p>
 

@@ -1223,10 +1223,14 @@
         draft.focus(); // 빈 칸으로 누른 것은 취소가 아니다. 닫으려면 옆의 ×가 있다.
         return;
       }
-      if (fits(parsed.title) && saved(Store.addChild(root.id, parsed))) {
+      const added = fits(parsed.title) ? saved(Store.addChild(root.id, parsed)) : null;
+
+      if (added) {
         childDraftText = ''; // 넣었으니 빈 칸으로 다시 연다
         focusDraft = true;
+        const note = hiddenNotice(added);
         render(); // 입력창은 그 자리에 다시 열린다
+        if (note) showNotice(note);
       } else {
         draft.focus();
       }
@@ -1347,6 +1351,39 @@
   // 추가 (F-01, F-02)
   // ────────────────────────────────────────────────────────────
 
+  /**
+   * 방금 만든 항목이 지금 걸어둔 필터에 걸리지 않으면, 어디로 갔는지 알릴 문장을 준다.
+   * 걸리면 `null`이다 — 눈앞에 나타난 것을 굳이 말할 필요는 없다.
+   *
+   * **만들어졌는데 화면에 안 나오고 아무 말도 없으면 "추가가 안 먹었다"로 읽힌다.**
+   * 그러면 다시 누르게 되고, 보이지 않는 곳에 같은 항목이 하나씩 쌓인다. 하위 입력창은
+   * 넣은 뒤에 빈 칸으로 다시 열리기까지 해서, 성공한 모습과 구별이 아예 안 된다.
+   *
+   * 어느 축이 걸렀는지까지 짚는다. "안 보입니다"만으로는 어디를 눌러야 볼 수 있는지
+   * 알 수 없다. 필터가 저절로 풀렸을 때 알리는 것과 같은 이유다 (PRD §13).
+   */
+  function hiddenNotice(item) {
+    const shown =
+      item.parentId === null
+        ? Store.getRoots(filter).some((t) => t.id === item.id)
+        : Store.getChildren(item.parentId, filter).some((t) => t.id === item.id);
+
+    if (shown) return null;
+
+    // 하위는 상위의 카테고리를 따라가므로 카테고리 축에 걸릴 일이 없다.
+    if (filter.type === 'category' && item.category !== filter.value) {
+      return `${categoryName(item.category)}에 추가했습니다. 지금은 ${categoryName(filter.value)}만 보고 있어서 이 목록에는 나오지 않습니다.`;
+    }
+    if (filter.type === 'tag' && !item.tags.includes(filter.value)) {
+      return `추가했습니다. #${filter.value} 태그가 없어서 이 목록에는 나오지 않습니다.`;
+    }
+    if (filter.query) {
+      return '추가했습니다. 검색어에 걸리지 않아서 이 목록에는 나오지 않습니다.';
+    }
+    // 위 셋 중 어느 것도 아닌데 안 보인다면 이유를 지어내지 않는다.
+    return '추가했습니다. 지금 걸어둔 조건에 맞지 않아서 이 목록에는 나오지 않습니다.';
+  }
+
   function handleAdd() {
     const parsed = Parse.parseInput(input.value);
 
@@ -1354,9 +1391,16 @@
     // 제목에 `!`를 적었으면 그게 이긴다. 안 적었으면 옆 선택 상자의 값을 쓴다.
     const chosen = { ...parsed, priority: parsed.priority ?? Number(priority.value) };
 
-    if (fits(parsed.title) && saved(Store.add(chosen, category.value))) {
-      input.value = '';
-      render();
+    if (fits(parsed.title)) {
+      const added = saved(Store.add(chosen, category.value));
+      if (added) {
+        input.value = '';
+        const note = hiddenNotice(added);
+        // 알림을 render() 뒤에 둔다. render()도 알릴 것이 있으면 알리는데,
+        // 방금 누른 것에 대한 답이 그 뒤에 서야 화면에 남는다.
+        render();
+        if (note) showNotice(note);
+      }
     }
     input.focus();
   }
@@ -1689,7 +1733,7 @@
     const label = el('span');
     // 하위가 함께 지워진 경우에만 개수를 밝힌다 (F-04)
     label.textContent =
-      note ?? (removed.length > 1 ? `${removed.length}개 항목이 삭제됨` : '삭제됨');
+      note ?? (removed.length > 1 ? `${removed.length}개 항목을 지웠습니다.` : '지웠습니다.');
 
     const button = el('button', 'toast-undo');
     button.type = 'button';
