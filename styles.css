@@ -908,6 +908,9 @@ body.pip {
   justify-content: center;
   height: 100vh;
   padding: 0;
+  /* 브라우저가 내주는 크기는 우리가 정하지 못한다. 아주 좁게 왔을 때 스크롤 막대가
+     생기면, 손바닥만 한 창의 남은 자리마저 그것이 가져간다. */
+  overflow: hidden;
 }
 
 .pip-box {
@@ -939,8 +942,16 @@ body.pip .pip-time {
 /* 창을 아주 낮게 줄이면 **눈금을 접고 숫자만 남긴다.** 사용자가 창 크기를 바꿀 수 있고
    브라우저가 마지막 크기를 기억하므로, 50px짜리 원에 10px 숫자가 들어앉는 자리가
    실제로 생긴다. 그때는 둘 다 못 읽는다 — 하나만 크게 보이는 편이 낫다.
-   눈금만 접고 가운데 글자는 흐름으로 되돌려 그 자리를 물려받게 한다. */
+   눈금만 접고 가운데 글자는 흐름으로 되돌려 그 자리를 물려받게 한다.
+
+   여백과 버튼도 함께 줄인다. 여기서 안 줄이면 고정된 자리가 창보다 커져,
+   숫자가 들어갈 높이가 남지 않는다. */
 @media (max-height: 175px) {
+  .pip-box {
+    gap: 6px;
+    padding: 6px 10px;
+  }
+
   body.pip .pomo-dial-face {
     width: auto;
     height: auto;
@@ -954,8 +965,28 @@ body.pip .pip-time {
     position: static;
   }
 
+  /* 남는 높이에서 글자 크기를 얻되 **아래로도 막는다.** 브라우저가 내주는 안쪽 높이가
+     76px까지 내려가는 것을 실제로 봤고, 계산만 따르면 그때 2px가 되어 아무것도 못 읽는다. */
   body.pip .pip-time {
-    font-size: min(34px, calc(100vh - 74px));
+    font-size: clamp(15px, calc(100vh - 52px), 34px);
+  }
+
+  .pip-action {
+    padding: 3px 10px;
+    font-size: 12px;
+  }
+
+  .pip-resize {
+    width: 24px;
+    height: 24px;
+  }
+}
+
+/* 더 낮아지면 구간 이름까지 접는다. 남은 시간과 누를 버튼이 먼저다 —
+   특히 크기 버튼은 마지막까지 남아야 한다. 그것이 창을 되키우는 유일한 자리다. */
+@media (max-height: 120px) {
+  body.pip .pip-phase {
+    display: none;
   }
 }
 
@@ -985,6 +1016,12 @@ body.pip.is-rest {
   --focus: light-dark(#006c4c, #57d3a4);
 }
 
+.pip-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .pip-action {
   padding: 6px 14px;
   border: 1px solid var(--focus);
@@ -995,6 +1032,37 @@ body.pip.is-rest {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+}
+
+/* 창 크기 버튼. 항상 위에 뜨는 창이라 가리는 넓이가 곧 비용이고,
+   창 가장자리를 끌 수 있다는 것을 알려주는 자리가 화면 어디에도 없다. */
+.pip-resize {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.pip-resize:hover {
+  border-color: var(--text-dim);
+  color: var(--text);
+}
+
+.pip-resize[hidden] {
+  display: none;
+}
+
+/* 화살표 하나로 두 상태를 쓴다. 커진 뒤에는 뒤집어 안으로 모으는 모양이 된다. */
+.pip-resize.is-large svg {
+  transform: rotate(180deg);
 }
 
 /* 기다리는 중에는 누를 것이 이것 하나뿐이다. 바탕까지 채워 그 사실을 말한다. */

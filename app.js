@@ -907,10 +907,32 @@
 
   const pipSupported = 'documentPictureInPicture' in globalThis;
 
+  /**
+   * 창 크기 두 가지. 항상 위에 뜨는 창이라 **가리는 넓이가 곧 비용**이다.
+   * 처음에는 작은 쪽으로 연다 — 큰 창이 필요하면 그때 키우면 되지만, 큰 창이
+   * 화면을 가리고 있으면 그것이 거슬리는 동안 내내 가린다.
+   *
+   * 작은 쪽은 눈금을 접고 숫자만 남긴다 (styles.css의 max-height 규칙).
+   * 큰 쪽에서는 시간이 흐른 만큼 채워지는 원이 함께 보인다.
+   * 브라우저가 이보다 작게는 못 만들 수도 있다 — 최소 크기는 브라우저가 정한다.
+   */
+  /**
+   * 여기 적는 높이는 **바깥 크기**다. 브라우저가 자기 머리띠(되돌아가기 단추가 있는 줄)를
+   * 그 안에서 빼가므로 안쪽은 50px 남짓 좁다 — 132를 달라고 했더니 안쪽이 76px로 왔다.
+   * 그래서 보이고 싶은 높이에 그만큼을 더해 적는다. 정확한 값은 브라우저가 정하므로
+   * 이 숫자에 기대지 않는다. 어느 크기가 오든 화면이 견디는 것은 styles.css가 맡는다.
+   */
+  const PIP_SMALL = { width: 240, height: 190 };
+  const PIP_LARGE = { width: 260, height: 320 };
+
+  /** 지금 큰 쪽인가. 사용자가 창을 직접 끌어 바꿀 수도 있으므로 실제 높이로 판단한다. */
+  const pipIsLarge = () => pipWindow !== null && pipWindow.innerHeight >= 200;
+
   let pipWindow = null;
   let pipTime = null;
   let pipPhase = null;
   let pipAction = null;
+  let pipResize = null;
   let pipFill = null;
   let pipTick = null;
   /** 창이 열리기를 기다리는 중인가. 이 사이에 한 번 더 누르면 두 번째가 거절당한다. */
@@ -953,6 +975,31 @@
   }
 
   /**
+   * 창 크기 버튼의 그림. 양쪽으로 벌어지는 화살표 하나로 두 상태를 다 쓴다 —
+   * 커진 상태에서는 CSS가 뒤집어 안으로 모으는 모양이 된다.
+   */
+  function buildResizeIcon() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '13');
+    svg.setAttribute('height', '13');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '2');
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    path.setAttribute('d', 'M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7');
+
+    svg.appendChild(path);
+    return svg;
+  }
+
+  /**
    * 별도 창을 연다. 이 창은 다른 창 위에 계속 떠 있어서 브라우저를 최소화해도 남는다 —
    * 페이지 안에 그리는 것으로는 닿을 수 없는 자리다.
    *
@@ -965,7 +1012,7 @@
     pipOpening = true;
     let win;
     try {
-      win = await documentPictureInPicture.requestWindow({ width: 208, height: 248 });
+      win = await documentPictureInPicture.requestWindow({ ...PIP_SMALL });
     } catch (e) {
       showNotice('창을 열지 못했습니다. 잠시 뒤에 다시 눌러주세요.');
       return;
@@ -997,6 +1044,27 @@
     pipAction.type = 'button';
     pipAction.addEventListener('click', pomoAct);
 
+    // 창 크기를 창 안에서 바꾼다. `resizeTo`는 사용자 조작이 있어야 통하는데,
+    // **이 버튼을 누른 것이 그 조작이다** — 밖에서 부르면 거절당한다.
+    // 창 가장자리를 끄는 길도 있지만, 항상 위에 뜨는 창이 접히는 방법이 있다는 것을
+    // 알려주는 자리가 화면 어디에도 없다.
+    pipResize = el('button', 'pip-resize');
+    pipResize.type = 'button';
+    pipResize.append(buildResizeIcon());
+    pipResize.addEventListener('click', () => {
+      const next = pipIsLarge() ? PIP_SMALL : PIP_LARGE;
+      try {
+        pipWindow.resizeTo(next.width, next.height);
+      } catch (e) {
+        // 브라우저가 막을 수도 있는 길이다. 그때 버튼을 그대로 두면 눌러도 아무 일이
+        // 없는 버튼이 되고, 왜 안 되는지 알 길이 없다. 치우고 다른 길을 알린다.
+        pipResize.hidden = true;
+        showNotice('이 브라우저에서는 창 크기를 앱이 바꾸지 못합니다. 창 가장자리를 끌어 조절해 주세요.');
+        return;
+      }
+      renderPomo(); // 버튼이 이제 반대쪽을 가리킨다
+    });
+
     // 숫자만으로는 얼마나 왔는지가 읽히지 않는다. 패널의 펼친 시계와 **같은 클래스**를
     // 쓰므로 색도 1초 전환도 그대로 따라온다 — 크기만 저 창에 맞춰 줄인다.
     const label = el('div', 'pomo-dial-label');
@@ -1005,8 +1073,11 @@
     const face = el('div', 'pomo-dial-face');
     face.append(buildDial(), label);
 
+    const bar = el('div', 'pip-bar');
+    bar.append(pipAction, pipResize);
+
     const box = el('div', 'pip-box');
-    box.append(face, pipAction);
+    box.append(face, bar);
     // 본 문서에서 만든 노드도 붙이는 순간 저 창의 것이 된다. 붙은 뒤에도
     // 이벤트 리스너는 그대로 살아 있어 여기서 건 click이 계속 우리에게 온다.
     win.document.body.className = 'pip';
@@ -1035,6 +1106,7 @@
     pipTime = null;
     pipPhase = null;
     pipAction = null;
+    pipResize = null;
     pipFill = null;
 
     renderPomo();
@@ -1056,6 +1128,13 @@
     setText(pipPhase, label || `${Math.round(pomoLength / 60)}분`);
     setText(pipAction, waiting ? nextLabel() : runLabel());
     pipFill.style.strokeDashoffset = offset;
+
+    // 사용자가 창을 직접 끌어 바꿀 수도 있으므로 실제 높이에서 다시 읽는다.
+    // 여는 자리에서만 고치면 그때 글자가 반대로 남는다.
+    const large = pipIsLarge();
+    pipResize.classList.toggle('is-large', large);
+    setAttr(pipResize, 'aria-label', large ? '창 작게' : '창 크게');
+    setAttr(pipResize, 'title', large ? '창 작게' : '창 크게');
 
     const body = pipWindow.document.body;
     body.classList.toggle('is-running', pomoEndsAt !== null);
