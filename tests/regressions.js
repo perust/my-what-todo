@@ -40,7 +40,7 @@ function loadStore(options = {}) {
 
 function baseData(overrides = {}) {
   return {
-    version: 7,
+    version: 8,
     theme: null,
     sort: 'manual',
     pomodoro: [
@@ -3262,7 +3262,8 @@ function appWithItems(options = {}) {
     add(parsed, category) {
       const item = { id: `t${items.length + 1}`, parentId: null, title: parsed.title,
         category, priority: parsed.priority, tags: parsed.tags, completed: false,
-        createdAt: 100, completedAt: null, dueAt: parsed.dueAt ?? null, order: items.length };
+        createdAt: 100, completedAt: null, dueAt: parsed.dueAt ?? null,
+        repeat: parsed.repeat ?? null, order: items.length };
       items.push(item);
       return item;
     },
@@ -3328,6 +3329,222 @@ test('저장에 실패하면 자세히를 닫지 않는다', () => {
   doc.getElementById('detail-due-date').value = '2026-08-06';
   press(dialog, 'save');
   assert.equal(dialog.open, true, '실패했으면 열린 채로 남아야 한다');
+});
+
+// ── 반복 (F-25) ────────────────────────────────────────
+
+/** 오늘 23:59 — 마감 기본 모양이다. */
+const endOfToday = () => { const at = new Date(); at.setHours(23, 59, 0, 0); return at.getTime(); };
+
+test('완료해야 다음 것이 태어난다. 해제할 때는 낳지 않는다', () => {
+  const { Store } = loadStore({ context: true });
+  const due = endOfToday();
+  const made = Store.add({ title: '영양제', priority: 1, tags: [],
+    dueAt: due, repeat: { unit: 'day', anchor: due } }, 'work');
+
+  assert.equal(Store.exportData().todos.length, 1);
+  Store.toggle(made.id);
+
+  const all = Store.exportData().todos;
+  assert.equal(all.length, 2, '완료하면 다음 주기가 생긴다');
+  const born = all.find((t) => !t.completed);
+  assert.equal(born.title, '영양제');
+  assert.equal(new Date(born.dueAt).getDate(), new Date(due + 86400000).getDate());
+
+  // **규칙은 살아 있는 하나에만 붙는다.** 옛 이력에 남겨두면 그것을 다시 체크할 때
+  // 또 낳아, 체크를 껐다 켤 때마다 하나씩 쌓인다.
+  assert.equal(all.find((t) => t.completed).repeat, null);
+
+  Store.toggle(made.id); // 해제
+  assert.equal(Store.exportData().todos.length, 2, '해제는 낳지 않는다');
+  Store.toggle(made.id); // 다시 완료 — 규칙이 없으니 그대로다
+  assert.equal(Store.exportData().todos.length, 2, '규칙이 떨어진 항목은 낳지 않는다');
+});
+
+test('하위도 함께 복제되고, 하위 마감은 상위가 움직인 만큼 같이 민다', () => {
+  const { Store } = loadStore({ context: true });
+  const due = endOfToday();
+  const parent = Store.add({ title: '아침 루틴', priority: 1, tags: [],
+    dueAt: due, repeat: { unit: 'day', anchor: due } }, 'work');
+  Store.addChild(parent.id, { title: '물', priority: 1, tags: [] });
+  Store.addChild(parent.id, { title: '스트레칭', priority: 0, tags: ['운동'], dueAt: due - 3600000 });
+
+  Store.toggle(parent.id);
+  const born = Store.getRoots().find((t) => !t.completed);
+  // getChildren은 지금 정렬 모드(기본은 우선순위순)로 준다. 여기서 보려는 것은
+  // 복제된 자리 순서라 order로 되돌려 세운다.
+  const kids = Store.getChildren(born.id).slice().sort((a, b) => a.order - b.order);
+
+  // 안 그러면 "아침 루틴"의 단계들이 다음 날 사라진다.
+  assert.deepEqual(plain(kids.map((k) => k.title)), plain(['물', '스트레칭']));
+  assert.equal(kids.every((k) => !k.completed), true, '새로 태어난 하위는 미완료다');
+  assert.deepEqual(plain(kids[1].tags), plain(['운동']));
+  assert.equal(kids[0].dueAt, null, '없던 마감은 그대로 없다');
+  // 옛 날짜를 그대로 들고 가면 태어나자마자 마감이 지나 있다.
+  assert.equal(kids[1].dueAt, born.dueAt - 3600000);
+  // 반복은 상위에만 붙는다. 하위도 각자 낳으면 한 번 완료에 항목이 여럿 생긴다.
+  assert.equal(kids.every((k) => k.repeat === null), true);
+});
+
+test('말일 반복은 짧은 달에서 당겨졌다가 제자리로 돌아온다', () => {
+  const { Store } = loadStore({ context: true });
+  const anchor = new Date(2026, 0, 31, 18, 0).getTime();
+
+  // 직전 마감에서 한 주기씩 더하면 2/28을 기준으로 삼아 영영 28일에 머문다.
+  // 처음 자리를 들고 있어야 3/31로 돌아온다.
+  const seen = [];
+  let due = anchor;
+  for (let i = 0; i < 5; i += 1) {
+    const item = Store.add({ title: '정산', priority: 1, tags: [],
+      dueAt: due, repeat: { unit: 'month', anchor } }, 'work');
+    // 그 마감 직후에 완료한 셈으로 친다.
+    const born = Store.nextDueFor
+      ? null
+      : (() => { Store.toggle(item.id); return Store.getRoots().find((t) => !t.completed); })();
+    seen.push(new Date(due).getDate());
+    due = born ? born.dueAt : due;
+    // 다음 회차를 위해 방금 만든 것들을 치운다
+    for (const t of Store.exportData().todos) Store.remove(t.id);
+    due = i === 0 ? new Date(2026, 1, 28, 18, 0).getTime()
+      : i === 1 ? new Date(2026, 2, 31, 18, 0).getTime()
+      : i === 2 ? new Date(2026, 3, 30, 18, 0).getTime()
+      : new Date(2026, 4, 31, 18, 0).getTime();
+  }
+  assert.deepEqual(plain(seen), plain([31, 28, 31, 30, 31]));
+});
+
+test('마감이 없으면 반복을 걸 수 없고, 마감을 지우면 반복도 떨어진다', () => {
+  const { Store } = loadStore({ context: true });
+  const due = endOfToday();
+
+  // 마감 없이 반복만 남으면 다음이 언제인지 정할 근거가 없다.
+  const bare = Store.add({ title: '가', priority: 1, tags: [],
+    repeat: { unit: 'day', anchor: due } }, 'work');
+  assert.equal(bare.repeat, null);
+
+  const made = Store.add({ title: '나', priority: 1, tags: [], dueAt: due }, 'work');
+  assert.equal(Store.update(made.id, { repeat: { unit: 'day', anchor: due } }) !== null, true);
+  assert.equal(Store.getItem(made.id).repeat.unit, 'day');
+
+  // 마감을 지우면 반복은 설 자리가 없다. 남겨두면 완료할 때 조용히 아무 일도 안 난다.
+  assert.ok(Store.update(made.id, { dueAt: null }));
+  assert.equal(Store.getItem(made.id).repeat, null);
+
+  // 같은 호출에서 마감과 반복을 함께 정하는 것이 흔하다. 고치기 전 값으로 재면 거절된다.
+  assert.ok(Store.update(made.id, { dueAt: due, repeat: { unit: 'week', anchor: due } }));
+  assert.equal(Store.getItem(made.id).repeat.unit, 'week');
+});
+
+test('반복은 상위에만 걸린다', () => {
+  const { Store } = loadStore({ context: true });
+  const due = endOfToday();
+  const parent = Store.add({ title: '상위', priority: 1, tags: [], dueAt: due }, 'work');
+  const child = Store.addChild(parent.id, { title: '하위', priority: 1, tags: [],
+    dueAt: due, repeat: { unit: 'day', anchor: due } });
+
+  assert.equal(child.repeat, null, '만들 때 걸리지 않는다');
+  assert.equal(Store.update(child.id, { repeat: { unit: 'day', anchor: due } }), null, '고쳐서도 안 된다');
+});
+
+test('로드는 하위에 남은 반복을 턴다', () => {
+  // 손으로 고친 파일이나 옛 버그로 하위에 규칙이 붙어 있으면, 상위가 낳을 때
+  // 하위도 각자 낳아 한 번 완료에 항목이 여럿 생긴다.
+  const { Store, localStorage } = loadStore({ context: true });
+  const due = endOfToday();
+  const blob = baseData({ todos: [
+    { id: 'p', parentId: null, title: '상위', category: 'work', priority: 1, tags: [],
+      completed: false, createdAt: 100, completedAt: null, dueAt: due, repeat: null, order: 0 },
+    { id: 'c', parentId: 'p', title: '하위', category: 'work', priority: 1, tags: [],
+      completed: false, createdAt: 100, completedAt: null, dueAt: due,
+      repeat: { unit: 'day', anchor: due }, order: 0 }
+  ] });
+  localStorage.setItem('daily-todo:v1', JSON.stringify(blob));
+  Store.load();
+  assert.equal(Store.getItem('c').repeat, null);
+});
+
+test('내보낸 사본은 안쪽까지 store와 끊어져 있다', () => {
+  // 스프레드는 얕다. 안쪽 객체를 공유하면 밖에서 얼리거나 고칠 때 store 안의 항목이
+  // 함께 흔들린다 — Markdown 파서가 결과를 deepFreeze하면서 store의 repeat까지 얼려
+  // 그 뒤로 Markdown 저장이 영영 실패했다.
+  const { Store } = loadStore({ context: true });
+  const due = endOfToday();
+  const made = Store.add({ title: '가', priority: 1, tags: ['t'],
+    dueAt: due, repeat: { unit: 'day', anchor: due } }, 'work');
+
+  const snap = Store.exportData();
+  assert.notEqual(snap.todos[0].repeat, Store.getItem(made.id).repeat, '같은 객체를 주면 안 된다');
+
+  Object.freeze(snap.todos[0].repeat);
+  Object.freeze(snap.todos[0].tags);
+  assert.equal(Object.isFrozen(Store.exportData().todos[0].repeat), false);
+
+  // 사본을 고쳐도 store는 그대로다.
+  const loose = Store.exportData();
+  loose.todos[0].repeat.unit = 'year';
+  loose.todos[0].tags.push('추가');
+  assert.equal(Store.getItem(made.id).repeat.unit, 'day');
+  assert.deepEqual(plain(Store.getItem(made.id).tags), plain(['t']));
+});
+
+test('망가진 반복 규칙은 반복 없음이 된다', () => {
+  const due = endOfToday();
+  for (const bad of [
+    { unit: 'hour', anchor: due }, { unit: 'day' }, { unit: 'day', anchor: 'x' },
+    { unit: 'day', anchor: 0 }, 'day', 7, [], true
+  ]) {
+    const { Store } = loadStore({ context: true });
+    const made = Store.add({ title: '가', priority: 1, tags: [], dueAt: due, repeat: bad }, 'work');
+    assert.equal(made.repeat, null, JSON.stringify(bad));
+  }
+});
+
+test('v7 저장본을 열면 반복 없는 항목으로 이어진다', () => {
+  const { Store, localStorage } = loadStore({ context: true });
+  const old = baseData({ todos: [{
+    id: 'a', parentId: null, title: '옛 항목', category: 'work', priority: 1, tags: [],
+    completed: false, createdAt: 100, completedAt: null, dueAt: endOfToday(), order: 0
+  }] });
+  old.version = 7;
+  localStorage.setItem('daily-todo:v1', JSON.stringify(old));
+  Store.load();
+
+  assert.equal(Store.wasCorrupted, false, '옛 형식은 손상이 아니다');
+  assert.equal(Store.getItem('a').repeat, null);
+  assert.equal(Store.getItem('a').title, '옛 항목');
+});
+
+test('반복 칸은 마감이 있어야 열리고, 하위에서는 줄이 통째로 감춰진다', () => {
+  const app = appWithItems();
+  const hooks = app.sandbox.__appTest;
+  const doc = app.document;
+  const sel = doc.getElementById('detail-repeat');
+  const note = doc.getElementById('detail-repeat-note');
+  const dialog = doc.getElementById('detail-dialog');
+
+  const withDue = app.Store.add({ title: '마감 있음', priority: 1, tags: [], dueAt: endOfToday() }, 'work');
+  const bare = app.Store.add({ title: '마감 없음', priority: 1, tags: [] }, 'work');
+  hooks.render();
+
+  hooks.openDetail(bare.id);
+  // 이유 없이 회색인 칸은 고장 난 것처럼 보인다. 왜 막혔는지 말한다.
+  assert.equal(sel.disabled, true);
+  assert.equal(note.textContent, '반복하려면 마감을 먼저 정해주세요.');
+  dialog.close();
+
+  hooks.openDetail(withDue.id);
+  assert.equal(sel.disabled, false);
+  assert.equal(sel.value, '', '반복이 없으면 안 함이다');
+  assert.equal(note.textContent, '', '안 함일 때까지 다음 주기 얘기를 하지 않는다');
+
+  sel.value = 'week';
+  sel.dispatch('change', {});
+  assert.equal(note.textContent, '완료하면 다음 주기의 할 일이 새로 생깁니다.');
+
+  // 마감을 지우면 그 자리에서 막히고 고른 것도 풀린다.
+  doc.getElementById('detail-due-clear').click();
+  assert.equal(sel.disabled, true);
+  assert.equal(sel.value, '');
 });
 
 (async () => {

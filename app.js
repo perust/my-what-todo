@@ -23,6 +23,9 @@
   const addDetail = document.getElementById('add-detail');
   const detailDialog = document.getElementById('detail-dialog');
   const detailFacts = document.getElementById('detail-facts');
+  const detailRepeatField = document.getElementById('detail-repeat-field');
+  const detailRepeat = document.getElementById('detail-repeat');
+  const detailRepeatNote = document.getElementById('detail-repeat-note');
   const detailSubject = document.getElementById('detail-subject');
   const detailDueDate = document.getElementById('detail-due-date');
   const detailDueTime = document.getElementById('detail-due-time');
@@ -1833,6 +1836,7 @@
       // `+`는 눌리기 전까지 투명하게만 숨으므로 자리는 그대로 차지해, 갈라진 자리가
       // 이유 없는 빈칸으로 보였다.
       ...(item.dueAt === null ? [] : [renderDue(item)]),
+      ...(item.repeat === null ? [] : [renderRepeat(item)]),
       renderTags(item, context)
     );
 
@@ -1903,6 +1907,15 @@
       due.setAttribute('aria-label', `마감: ${formatDue(item.dueAt)}`);
     }
     return due;
+  }
+
+  /** 반복 배지. 마감 바로 뒤에 선다 — 그 날짜가 어떻게 움직이는지를 말하기 때문이다. */
+  function renderRepeat(item) {
+    const badge = el('span', 'todo-repeat');
+    // 아이콘도 글자도 `currentColor` 하나로 그린다. 색을 늘리지 않는다.
+    badge.textContent = `↻ ${REPEAT_LABEL[item.repeat.unit]}`;
+    badge.setAttribute('aria-label', `반복: ${REPEAT_LABEL[item.repeat.unit]}`);
+    return badge;
   }
 
   /** 하위 입력창. 자식 목록의 맨 끝에 놓여 상위 바로 아래에서 연속 입력을 받는다. */
@@ -2170,6 +2183,8 @@
     return `${head} ${timeFieldOf(at)}`;
   }
 
+  const REPEAT_LABEL = { day: '매일', week: '매주', month: '매월', year: '매년' };
+
   /** 마감이 지났는가. 완료한 것은 지났다고 하지 않는다 — 이미 끝난 일이다. */
   const overdue = (item) =>
     item.dueAt !== null && !item.completed && item.dueAt < Date.now();
@@ -2180,13 +2195,16 @@
    * 실수가 생기고, 폼 안에 넣었을 때는 제목 칸이 26px로 찌그러지기까지 했다.
    */
   let pendingDue = null;
+  /** 같은 이유로 반복도 들고만 있는다. 항목이 태어날 때 함께 실린다. */
+  let pendingRepeat = '';
 
   /** 걸어둔 것이 있는지 버튼에 남긴다. 안 그러면 정했는지를 열어봐야만 안다. */
   function renderAddDetail() {
     addDetail.classList.toggle('is-set', pendingDue !== null);
+    const repeat = pendingRepeat === '' ? '' : `, ${REPEAT_LABEL[pendingRepeat]} 반복`;
     setAttr(addDetail, 'aria-label', pendingDue === null
       ? '자세히 — 마감 정하기'
-      : `자세히 — 마감 ${formatDue(pendingDue)}`);
+      : `자세히 — 마감 ${formatDue(pendingDue)}${repeat}`);
   }
 
   function handleAdd() {
@@ -2197,13 +2215,17 @@
     const chosen = { ...parsed, priority: parsed.priority ?? Number(priority.value) };
 
     chosen.dueAt = pendingDue;
+    chosen.repeat = pendingRepeat === '' || pendingDue === null
+      ? null
+      : { unit: pendingRepeat, anchor: pendingDue };
 
     if (fits(parsed.title)) {
       const added = saved(Store.add(chosen, category.value));
       if (added) {
         input.value = '';
-        // 걸어둔 마감은 그 항목에 실렸다. 다음 할 일까지 따라가면 안 된다.
+        // 걸어둔 것은 그 항목에 실렸다. 다음 할 일까지 따라가면 안 된다.
         pendingDue = null;
+        pendingRepeat = '';
         renderAddDetail();
         const note = hiddenNotice(added);
         // 알림을 render() 뒤에 둔다. render()도 알릴 것이 있으면 알리는데,
@@ -3513,6 +3535,25 @@
     return `${at.getFullYear()}. ${at.getMonth() + 1}. ${at.getDate()}. ${timeFieldOf(at)}`;
   };
 
+  /**
+   * 반복은 마감에 기대므로 마감이 없으면 고를 수 없다. **왜 막혔는지를 말한다** —
+   * 이유 없이 회색인 칸은 고장 난 것처럼 보인다. 날짜를 치는 도중에도 따라 풀린다.
+   */
+  function reflectRepeatAvailability() {
+    const due = readDueFields(detailDueDate, detailDueTime);
+    const ready = due !== null && due !== undefined;
+
+    detailRepeat.disabled = !ready;
+    if (!ready && detailRepeat.value !== '') detailRepeat.value = '';
+
+    // 지금 고른 것에 맞춰 말한다. "안 함"일 때까지 다음 주기 얘기를 하면
+    // 이미 반복이 걸린 것처럼 읽힌다.
+    let note = '';
+    if (!ready) note = '반복하려면 마감을 먼저 정해주세요.';
+    else if (detailRepeat.value !== '') note = '완료하면 다음 주기의 할 일이 새로 생깁니다.';
+    setText(detailRepeatNote, note);
+  }
+
   /** `id`가 `null`이면 아직 만들지 않은 할 일이다 — 추가 폼에서 연 경우다. */
   function openDetail(id) {
     const item = id === null ? null : Store.getItem(id);
@@ -3535,6 +3576,13 @@
     // 아직 만들지 않은 것에는 만든 날도 완료도 없다.
     setHidden(detailFacts, item === null);
 
+    // 반복은 상위에만 건다. 하위에서는 줄을 통째로 감춘다 — 막힌 칸을 보여주고
+    // 왜 막혔는지 설명하는 것보다, 없는 편이 읽을 것이 적다.
+    const onChild = item !== null && item.parentId !== null;
+    setHidden(detailRepeatField, onChild);
+    detailRepeat.value = item?.repeat?.unit ?? (item ? '' : pendingRepeat ?? '');
+    reflectRepeatAvailability();
+
     detailDialog.showModal();
     detailDueDate.focus();
   }
@@ -3554,19 +3602,28 @@
     // 아직 만들지 않은 할 일이면 들고만 있는다. 저장할 곳이 없다.
     if (detailFor === null) {
       pendingDue = due;
+      pendingRepeat = due === null ? '' : detailRepeat.value;
       renderAddDetail();
       detailDialog.close();
       return;
     }
 
-    // 바뀐 것이 없으면 저장하러 가지 않는다. 판 번호가 괜히 올라 다른 탭이 다시 읽는다.
     const item = Store.getItem(detailFor);
-    if (item && item.dueAt === due) {
+    const unit = detailRepeat.disabled ? '' : detailRepeat.value;
+    // **처음 걸 때만 기준을 새로 잡는다.** 주기만 바꿨다고 기준을 옮기면 말일 반복이
+    // 그 자리에서 밀린다. 마감을 고쳤으면 그 새 마감이 기준이다.
+    const repeat = unit === '' ? null : {
+      unit,
+      anchor: item?.repeat?.unit === unit && item.dueAt === due ? item.repeat.anchor : due
+    };
+
+    // 바뀐 것이 없으면 저장하러 가지 않는다. 판 번호가 괜히 올라 다른 탭이 다시 읽는다.
+    if (item && item.dueAt === due && (item.repeat?.unit ?? '') === unit) {
       detailDialog.close();
       return;
     }
 
-    if (saved(Store.update(detailFor, { dueAt: due })) === null) return;
+    if (saved(Store.update(detailFor, { dueAt: due, repeat })) === null) return;
     detailDialog.close();
     render();
   }
@@ -3578,8 +3635,15 @@
     else detailDialog.close();
   });
 
+  for (const field of [detailDueDate, detailDueTime, detailRepeat]) {
+    field.addEventListener('input', reflectRepeatAvailability);
+  }
+  // select는 브라우저에 따라 input이 아니라 change로만 알린다.
+  detailRepeat.addEventListener('change', reflectRepeatAvailability);
+
   detailDueClear.addEventListener('click', () => {
     writeDueFields(detailDueDate, detailDueTime, null);
+    reflectRepeatAvailability();
     detailDueDate.focus();
   });
 

@@ -19,8 +19,10 @@ format_version: 1
   const CATEGORY_KEYS = ['id', 'name', 'hue'];
   const TODO_KEYS = [
     'id', 'parentId', 'title', 'category', 'priority', 'tags',
-    'completed', 'createdAt', 'completedAt', 'dueAt', 'order'
+    'completed', 'createdAt', 'completedAt', 'dueAt', 'repeat', 'order'
   ];
+  const REPEAT_KEYS = ['unit', 'anchor'];
+  const REPEAT_UNITS = new Set(['day', 'week', 'month', 'year']);
   const POMO_KEYS = ['focus', 'rest'];
   const SORTS = new Set(['priority', 'manual', 'created', 'category', 'completed']);
   const ESCAPED = new Set(['\\', '`', '*', '_', '[', ']', '{', '}', '(', ')', '#', '+', '.', '!', '|', '~', '-']);
@@ -142,6 +144,11 @@ format_version: 1
       isNativeConstructor(constructorDescriptor?.value, 'Array', prototype);
   }
 
+  /** 검증을 통과한 반복 규칙의 사본. 모양은 위 REPEAT_KEYS로 이미 확인했다. */
+  function cloneRepeat(repeat) {
+    return repeat === null ? null : { unit: own(repeat, 'unit'), anchor: own(repeat, 'anchor') };
+  }
+
   function isStandardDataDescriptor(descriptor) {
     return descriptor?.get === undefined && descriptor?.set === undefined &&
       descriptor.enumerable === true && descriptor.configurable === true && descriptor.writable === true;
@@ -194,7 +201,7 @@ format_version: 1
     // 이 관문이 조용히 통과시켜, 새로 늘어난 필드를 여기서 어떻게 다룰지 아무도 안 본다.
     // 여기가 걸려 테스트가 깨지는 것이 곧 "그 필드를 검토하라"는 신호다.
     // 올릴 때는 TODO_KEYS와 아래 항목 검증도 같이 본다.
-    if (own(current, 'version') !== 7) deny('INVALID_CURRENT');
+    if (own(current, 'version') !== 8) deny('INVALID_CURRENT');
     const theme = own(current, 'theme');
     if (theme !== null && theme !== 'light' && theme !== 'dark') deny('INVALID_CURRENT');
     if (!SORTS.has(own(current, 'sort'))) deny('INVALID_CURRENT');
@@ -253,6 +260,7 @@ format_version: 1
       const createdAt = own(item, 'createdAt');
       const completedAt = own(item, 'completedAt');
       const dueAt = own(item, 'dueAt');
+      const repeat = own(item, 'repeat');
       const order = own(item, 'order');
       if (typeof id !== 'string' || !id || byId.has(id) ||
           (parentId !== null && (typeof parentId !== 'string' || !parentId)) ||
@@ -267,8 +275,18 @@ format_version: 1
           (!completed && completedAt !== null) ||
           // 마감은 분 단위다. store가 내림해 담으므로 초가 섞인 값은 우리 것이 아니다.
           (dueAt !== null && (!Number.isInteger(dueAt) || dueAt < 1 || dueAt % 60000 !== 0)) ||
+          // 반복은 마감이 있어야 서고, 상위에만 붙는다. 규칙은 store가 만든 모양 그대로다.
+          (repeat !== null && (dueAt === null || parentId !== null)) ||
           !Number.isInteger(order) || order < 0) {
         deny('INVALID_CURRENT');
+      }
+      if (repeat !== null) {
+        exactKeys(repeat, REPEAT_KEYS);
+        const anchor = own(repeat, 'anchor');
+        if (!REPEAT_UNITS.has(own(repeat, 'unit')) ||
+            !Number.isInteger(anchor) || anchor < 1 || anchor % 60000 !== 0) {
+          deny('INVALID_CURRENT');
+        }
       }
       try {
         if (encodeURIComponent(decodeURIComponent(encodeURIComponent(id))) !== encodeURIComponent(id)) deny('INVALID_CURRENT');
@@ -412,10 +430,14 @@ format_version: 1
       createdAt: own(current, 'createdAt'),
       completedAt: match[2] === (own(current, 'completed') ? 'x' : ' ')
         ? own(current, 'completedAt') : null,
-      // 마감은 Markdown 한 줄에 적히지 않는다. 파일에서 고칠 수 있는 것이 아니므로
-      // **지금 값을 그대로 들고 온다** — 빠뜨리면 파일을 한 번 왕복하는 것만으로
-      // 걸어둔 마감이 전부 지워진다. createdAt과 같은 성격의 자리다.
+      // 마감과 반복은 Markdown 한 줄에 적히지 않는다. 파일에서 고칠 수 있는 것이
+      // 아니므로 **지금 값을 그대로 들고 온다** — 빠뜨리면 파일을 한 번 왕복하는
+      // 것만으로 걸어둔 것이 전부 지워진다. createdAt과 같은 성격의 자리다.
       dueAt: own(current, 'dueAt'),
+      // **참조를 그대로 물려주지 않는다.** 결과는 아래에서 deepFreeze되는데, 같은
+      // 객체를 넘겨준 쪽도 함께 얼어붙는다. 그러면 그 스냅샷으로 다시 파싱할 때
+      // "표준 데이터 속성이 아니다"로 거절당해 Markdown 저장이 영영 실패한다.
+      repeat: cloneRepeat(own(current, 'repeat')),
       order: child ? (children.get(lastRoot.id)?.length || 0) : roots.length
     };
     if (child) {

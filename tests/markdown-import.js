@@ -19,7 +19,7 @@ function load() {
 
 function snapshot(overrides = {}) {
   return {
-    version: 7,
+    version: 8,
     theme: 'dark',
     sort: 'manual',
     pomodoro: [
@@ -40,7 +40,7 @@ function snapshot(overrides = {}) {
 function todo(id, fields = {}) {
   return {
     id, parentId: null, title: id, category: 'work', priority: 1,
-    tags: [], completed: false, createdAt: 100, completedAt: null, dueAt: null, order: 0,
+    tags: [], completed: false, createdAt: 100, completedAt: null, dueAt: null, repeat: null, order: 0,
     ...fields
   };
 }
@@ -556,6 +556,66 @@ test('초가 섞인 마감을 가진 현재 데이터는 우리 것이 아니다
     const dirty = snapshot({ todos: [todo('a', { dueAt: bad })] });
     expectError(() => MarkdownImport.parse(text, dirty), 'INVALID_CURRENT');
   }
+  assert.ok(MarkdownImport.parse(text, clean));
+});
+
+test('반복도 파일에 적히지 않지만 왕복해도 살아남는다', () => {
+  const { MarkdownExport, MarkdownImport } = load();
+  const due = 1786000020000;
+  const repeat = { unit: 'month', anchor: 1786000020000 };
+  const current = snapshot({ todos: [todo('r', { dueAt: due, repeat })] });
+  const text = MarkdownExport.render(current);
+
+  assert.ok(!text.includes('month'), '반복은 Markdown 한 줄에 적히지 않는다');
+  const back = MarkdownImport.parse(text, current);
+  assert.deepEqual(plain(back.data.todos[0].repeat), plain(repeat));
+
+  // 제목을 고쳐도 따라온다 — 파일에서 고칠 수 있는 것이 아니다.
+  const edited = MarkdownImport.parse(
+    replaceLine(text, 'r', '- [ ] (P1) 고친 제목 <!-- my-what-todo:id=r -->'), current);
+  assert.deepEqual(plain(edited.data.todos[0].repeat), plain(repeat));
+});
+
+test('같은 스냅샷으로 두 번 파싱해도 막히지 않는다', () => {
+  // 결과는 deepFreeze된다. 안쪽 객체를 참조로 물려주면 **넘겨준 쪽도 함께 얼어붙어**,
+  // 그 스냅샷으로 다시 파싱할 때 "표준 데이터 속성이 아니다"로 거절당한다.
+  // 앱에서는 Markdown 저장이 그 뒤로 영영 실패하는 모습으로 나타났다.
+  const { MarkdownExport, MarkdownImport } = load();
+  const due = 1786000020000;
+  const current = snapshot({ todos: [todo('r', { dueAt: due, repeat: { unit: 'day', anchor: due } })] });
+  const text = MarkdownExport.render(current);
+
+  MarkdownImport.parse(text, current);
+  assert.equal(Object.isFrozen(current.todos[0].repeat), false, '넘겨준 쪽이 얼면 안 된다');
+  assert.ok(MarkdownImport.parse(text, current), '두 번째도 지나가야 한다');
+  assert.ok(MarkdownExport.render(current), '내보내기도 그대로 된다');
+});
+
+test('우리 것이 아닌 반복 규칙을 가진 현재 데이터는 거절한다', () => {
+  // 관문 셋의 기준이 어긋나면 앱이 자기 저장본 때문에 사용자 파일을 탓하게 된다.
+  const { MarkdownExport, MarkdownImport } = load();
+  const due = 1786000020000;
+  const clean = snapshot({ todos: [todo('r', { dueAt: due, repeat: { unit: 'day', anchor: due } })] });
+  const text = MarkdownExport.render(clean);
+
+  const bad = [
+    { unit: 'hour', anchor: due },              // 모르는 주기
+    { unit: 'day' },                            // 기준 없음
+    { unit: 'day', anchor: due, every: 2 },     // 우리가 안 만드는 키
+    { unit: 'day', anchor: due + 1 },           // 분 단위가 아님
+    { unit: 'day', anchor: 0 }
+  ];
+  for (const repeat of bad) {
+    expectError(() => MarkdownImport.parse(text, snapshot({
+      todos: [todo('r', { dueAt: due, repeat })]
+    })), 'INVALID_CURRENT');
+  }
+
+  // 마감 없이 반복만 있는 것도 우리 것이 아니다.
+  expectError(() => MarkdownImport.parse(text, snapshot({
+    todos: [todo('r', { dueAt: null, repeat: { unit: 'day', anchor: due } })]
+  })), 'INVALID_CURRENT');
+
   assert.ok(MarkdownImport.parse(text, clean));
 });
 

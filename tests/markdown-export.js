@@ -19,7 +19,7 @@ function load() {
 
 function snapshot(overrides = {}) {
   return {
-    version: 7,
+    version: 8,
     theme: null,
     sort: 'manual',
     pomodoro: [],

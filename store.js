@@ -11,9 +11,10 @@
   const CORRUPTED_KEY = 'daily-todo:v1:corrupted';
   /**
    * 5에서 미니 타이머 불투명도(miniOpacity), 6에서 빼놓은 창의 보기 방식(pipDial),
-   * 7에서 항목의 마감(dueAt)이 늘었다. 키는 그대로 두고 이 숫자만 올린다.
+   * 7에서 항목의 마감(dueAt), 8에서 반복(repeat)이 늘었다.
+   * 키는 그대로 두고 이 숫자만 올린다.
    */
-  const SCHEMA_VERSION = 7;
+  const SCHEMA_VERSION = 8;
   const MAX_TITLE = 100;
   const MAX_CATEGORY_NAME = 12;
 
@@ -128,6 +129,60 @@
     // 분 단위로 내린다. Date를 거치지 않아 시간대와 무관하다.
     return Math.floor(value / 60000) * 60000;
   };
+
+  /**
+   * 반복 주기. **다음 것은 완료할 때 태어난다** — 시간이 지나면 저절로 만드는 쪽은
+   * 자리를 두 달 비우면 매일 할 일 하나가 60개가 되고, 앱을 열 때마다 "지났나"를
+   * 판정해야 해서 자정 경계·시간대·기기 시계가 한꺼번에 들어온다. 탭이 둘이면
+   * 두 번 밀 수도 있다. 완료를 방아쇠로 삼으면 그 전부가 사라지고, 미완료가
+   * 언제나 하나뿐이라 항목이 폭발하지 않는다. 안 한 날은 그 항목이 마감 지난 채로
+   * 서 있는 것이 표시가 된다.
+   */
+  const REPEAT_UNITS = ['day', 'week', 'month', 'year'];
+
+  /**
+   * `anchor`는 이 반복이 처음 걸린 마감이다. **다음 마감을 늘 여기서부터 센다.**
+   * 직전 마감에서 한 주기씩 더하면 말일이 밀린다 — 1/31에 한 달을 더하면 2월에는
+   * 그 날이 없어 2/28로 당겨지는데, 다음부터 28일을 기준으로 세면 3/28, 4/28로
+   * 영영 돌아오지 못한다. 처음 자리를 들고 있으면 2/28 다음이 3/31이다.
+   */
+  const normalizeRepeat = (value, dueAt) => {
+    if (dueAt === null) return null; // 마감이 없으면 다음이 언제인지 정할 근거가 없다
+    if (!value || typeof value !== 'object') return null;
+    if (!REPEAT_UNITS.includes(value.unit)) return null;
+    const anchor = normalizeDue(value.anchor);
+    if (anchor === null) return null;
+    return { unit: value.unit, anchor };
+  };
+
+  /** 기준 시각에서 k주기 뒤. 달이 짧으면 그 달의 마지막 날로 당긴다. */
+  function addPeriods(anchor, unit, k) {
+    const at = new Date(anchor);
+    const y = at.getFullYear();
+    const m = at.getMonth();
+    const d = at.getDate();
+    const h = at.getHours();
+    const min = at.getMinutes();
+
+    if (unit === 'day') return new Date(y, m, d + k, h, min).getTime();
+    if (unit === 'week') return new Date(y, m, d + 7 * k, h, min).getTime();
+
+    const months = unit === 'year' ? 12 * k : k;
+    // 그 달의 마지막 날. 0일은 앞 달의 말일을 뜻한다.
+    const last = new Date(y, m + months + 1, 0).getDate();
+    return new Date(y, m + months, Math.min(d, last), h, min).getTime();
+  }
+
+  /** `after`보다 뒤에 오는 첫 마감. 자리를 오래 비웠어도 몇 번 만에 닿게 건너뛴다. */
+  function nextDue(repeat, after) {
+    const { anchor, unit } = repeat;
+    const span = { day: 1, week: 7, month: 30, year: 365 }[unit] * 86400000;
+    let k = Math.max(1, Math.floor((after - anchor) / span));
+    // 어림잡은 자리에서 양쪽으로 걸어 정확한 첫 자리를 찾는다.
+    while (addPeriods(anchor, unit, k) <= after) k += 1;
+    while (k > 1 && addPeriods(anchor, unit, k - 1) > after) k -= 1;
+    return addPeriods(anchor, unit, k);
+  }
 
   /** 처음 열었을 때 주어지는 세 가지. 이후로는 사용자가 늘리고 줄인다. */
   const DEFAULT_CATEGORIES = [
@@ -376,7 +431,18 @@
   /** 정렬은 형제 그룹 안에서만. 원본 배열을 건드리지 않는다. */
   const sorted = (group) => group.slice().sort(compare);
 
-  const clone = (item) => ({ ...item, tags: item.tags.slice() });
+  /**
+   * **중첩된 것은 하나도 남김없이 복사한다.** 스프레드는 얕아서 안쪽 객체를 그대로
+   * 공유하는데, 이 사본은 `exportData`로 밖에 나간다 — 받은 쪽이 얼리거나 고치면
+   * store 안의 항목이 함께 얼거나 바뀐다. 실제로 Markdown 파서가 결과를 `deepFreeze`
+   * 하면서 store 내부의 `repeat`까지 얼려, 그 뒤로 Markdown 저장이 영영 실패했다.
+   * 항목에 중첩 객체를 더할 때는 여기도 같이 고친다.
+   */
+  const clone = (item) => ({
+    ...item,
+    tags: item.tags.slice(),
+    repeat: item.repeat === null ? null : { ...item.repeat }
+  });
 
   const nextOrder = (parentId) =>
     todos.reduce((max, t) => (t.parentId === parentId ? Math.max(max, t.order + 1) : max), 0);
@@ -565,6 +631,8 @@
         completedAt: Number.isFinite(raw.completedAt) ? raw.completedAt : null,
         // v6까지는 없던 자리다. 없으면 마감이 없는 것이고, 옮길 것이 없다.
         dueAt: normalizeDue(raw.dueAt),
+        // 반복은 마감에 기대므로 마감을 정한 다음에 본다. 하위의 반복은 3단계에서 턴다.
+        repeat: normalizeRepeat(raw.repeat, normalizeDue(raw.dueAt)),
         order: Number.isFinite(raw.order) ? raw.order : 0
       });
     }
@@ -664,6 +732,10 @@
       if (item.parentId !== null) {
         const parent = byId.get(item.parentId);
         if (parent) item.category = parent.category; // 하위는 상위를 상속한다 (F-08)
+        // **반복은 상위에만 건다.** 여기서 털지 않으면 상위가 다음 주기를 낳을 때
+        // 하위도 각자 낳으려 들어, 한 번 완료에 항목이 여럿 생긴다.
+        // 부모가 바뀌는 곳(위 승격 단계)을 지난 뒤라야 판정이 맞다.
+        item.repeat = null;
       }
       // Map은 아무 값이나 키로 받는다. null을 그대로 써서 상위 그룹을 구분한다.
       const key = item.parentId;
@@ -756,6 +828,48 @@
   }
 
   /**
+   * 완료한 반복 항목에서 다음 주기의 항목을 낳는다. `commit` 안에서만 부른다 —
+   * 저장 실패는 바깥에서 통째로 되돌린다.
+   *
+   * 하위도 함께 복제한다. 안 그러면 "아침 루틴"의 단계들이 다음 날 사라진다.
+   * 하위의 마감은 **상위가 움직인 만큼 같이 민다** — 옛 날짜를 그대로 들고 가면
+   * 태어나자마자 마감이 지나 있다.
+   */
+  function spawnNext(done) {
+    const due = nextDue(done.repeat, Date.now());
+    const shift = due - done.dueAt;
+    const repeat = done.repeat;
+
+    // 규칙은 새것으로 옮긴다. 옛 이력에 남겨두면 그것을 다시 체크할 때 또 낳는다.
+    done.repeat = null;
+
+    const born = createItem({
+      parentId: null,
+      title: done.title,
+      category: done.category,
+      priority: done.priority,
+      tags: done.tags.slice(),
+      dueAt: due,
+      repeat
+    });
+    todos.push(born);
+
+    for (const child of childrenOf(done.id)) {
+      todos.push(createItem({
+        parentId: born.id,
+        title: child.title,
+        category: born.category,
+        priority: child.priority,
+        tags: child.tags.slice(),
+        dueAt: child.dueAt === null ? null : child.dueAt + shift
+      }));
+    }
+
+    invalidate();
+    return born;
+  }
+
+  /**
    * 변경을 스냅샷으로 감싼다. 저장에 실패하면 전파 포함 전부 되돌리고 null을 준다.
    * 호출부는 null을 "저장하지 못했다"로 읽으면 된다.
    */
@@ -832,6 +946,9 @@
       createdAt: Date.now(),
       completedAt: null,
       dueAt: normalizeDue(fields.dueAt),
+      repeat: fields.parentId === null
+        ? normalizeRepeat(fields.repeat, normalizeDue(fields.dueAt))
+        : null,
       order: nextOrder(fields.parentId)
     };
   }
@@ -988,6 +1105,7 @@
     POMO_MIN_MINUTES,
     POMO_MAX_MINUTES,
     MIN_DUE,
+    REPEAT_UNITS,
 
     /** 회차별 길이(분). 복사본이라 UI가 목록을 직접 건드릴 수 없다. */
     getPomodoro() {
@@ -1294,7 +1412,8 @@
           category: cat,
           priority: parsed.priority,
           tags: parsed.tags,
-          dueAt: parsed.dueAt
+          dueAt: parsed.dueAt,
+          repeat: parsed.repeat
         });
         todos.push(item);
         invalidate();
@@ -1361,6 +1480,24 @@
         // 잘못 넣은 것은 다른 일이라, 후자는 저장 실패와 같은 자리에서 거절한다.
         if (patch.dueAt !== null && next.dueAt === null) return null;
       }
+
+      if (patch.repeat !== undefined) {
+        // 반복은 상위에만 건다. 하위에 걸면 상위가 낳을 때 하위도 각자 낳는다.
+        if (item.parentId !== null) return null;
+        if (patch.repeat === null) {
+          next.repeat = null;
+        } else {
+          // **이 호출이 끝난 뒤의 마감**으로 본다. 같은 호출에서 마감과 반복을 함께
+          // 정하는 것이 흔한데, 고치기 전 값으로 재면 그때마다 거절당한다.
+          const due = next.dueAt !== undefined ? next.dueAt : item.dueAt;
+          next.repeat = normalizeRepeat(patch.repeat, due);
+          if (next.repeat === null) return null;
+        }
+      }
+
+      // 마감을 지우면 반복은 설 자리가 없다. 남겨두면 완료할 때 다음이 언제인지
+      // 알 수 없어 조용히 아무 일도 안 일어난다.
+      if (next.dueAt === null && patch.repeat === undefined) next.repeat = null;
 
       return commit(() => {
         Object.assign(item, next);
@@ -1469,6 +1606,12 @@
         } else {
           reconcileParent(find(item.parentId)); // 상향 전파 / 상향 해제
         }
+
+        // **완료로 넘어가는 순간에만 다음 것을 낳는다.** 해제할 때도 낳으면 체크를
+        // 껐다 켤 때마다 하나씩 쌓인다. 낳은 뒤에는 이 항목에서 규칙을 뗀다 —
+        // 규칙은 언제나 "지금 살아 있는 하나"에만 붙어 있어야, 옛 이력을 다시
+        // 체크했을 때 또 낳지 않는다.
+        if (next && item.repeat !== null) spawnNext(item);
         return item;
       });
     },

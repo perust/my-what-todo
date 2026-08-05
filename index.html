@@ -581,6 +581,24 @@
       <p class="detail-note">시각을 비우면 그날 23:59로 맞춥니다.</p>
     </div>
 
+    <!--
+      반복은 마감에 기대므로 마감이 없으면 고를 수 없다. app.js가 날짜 칸을 보고
+      막고 풀며, 왜 막혔는지를 아래 문구로 말한다 — 이유 없이 회색인 칸은
+      고장 난 것처럼 보인다. 하위에는 이 줄을 통째로 감춘다.
+    -->
+    <div class="detail-field" id="detail-repeat-field">
+      <label class="detail-label" for="detail-repeat">반복</label>
+      <select id="detail-repeat" class="detail-repeat"
+              aria-describedby="detail-repeat-note">
+        <option value="">안 함</option>
+        <option value="day">매일</option>
+        <option value="week">매주</option>
+        <option value="month">매월</option>
+        <option value="year">매년</option>
+      </select>
+      <p id="detail-repeat-note" class="detail-note"></p>
+    </div>
+
     <!-- 아직 만들지 않은 할 일에는 만든 날도 완료도 없다. 그때는 이 묶음을 감춘다. -->
     <dl id="detail-facts" class="detail-facts">
       <dt>만든 날</dt><dd id="detail-created"></dd>
