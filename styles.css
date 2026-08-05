@@ -2222,7 +2222,23 @@ button.badge:hover {
   cursor: pointer;
 }
 
-.todo-delete:hover {
+/* `⋯`는 `×`와 같은 자리에 같은 크기로 선다. 둘을 따로 적으면 한쪽만 고쳐 어긋난다. */
+.todo-detail {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.todo-delete:hover,
+.todo-detail:hover {
   background: color-mix(in srgb, var(--text) 8%, transparent);
   color: var(--text);
 }
@@ -2231,6 +2247,7 @@ button.badge:hover {
    터치 화면에는 hover가 없어, 숨기면 영영 못 찾는다. */
 @media (hover: hover) and (pointer: fine) {
   .todo-delete,
+  .todo-detail,
   .todo-add-child,
   .todo-handle.is-draggable {
     opacity: 0;
@@ -2243,6 +2260,8 @@ button.badge:hover {
 
   .todo:hover .todo-delete,
   .todo:focus-within .todo-delete,
+  .todo:hover .todo-detail,
+  .todo:focus-within .todo-detail,
   .todo:hover .todo-add-child,
   .todo:focus-within .todo-add-child,
   .todo:hover .todo-handle.is-draggable,
@@ -2255,6 +2274,171 @@ button.badge:hover {
     width: 16px;
     opacity: 1;
   }
+}
+
+/* ── 마감 (F-24) ────────────────────────────────────── */
+
+/* 카테고리 배지 옆에 서지만 **색을 늘리지 않는다.** 마감은 중립색으로 두고,
+   지난 것만 우선순위 0이 쓰는 accent를 빌려 온다 — 이미 "급하다"를 뜻하는 색이다. */
+.todo-due {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 색만으로 알리지 않는다 — 굵기를 함께 올리고, 읽어주는 쪽에는 app.js가
+   "마감 지남"을 aria-label로 넣는다. 네 배경(라이트·다크 × 카드·바탕)에서
+   5.01 / 5.40 / 5.09 / 5.66이다. 머리줄의 `.remaining`이 이미 같은 방식
+   (accent 색 + accent 틴트)을 쓰고 있어 새로 들이는 것이 없다. */
+.todo-due.is-overdue {
+  background: color-mix(in srgb, var(--focus) 13%, transparent);
+  color: var(--focus);
+  font-weight: 600;
+}
+
+/* ── 추가 폼의 마감 칸 ──────────────────────────────── */
+
+.add-due-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--field-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.add-due-toggle:hover {
+  color: var(--text);
+}
+
+/* 펼쳐져 있다는 것을 버튼에도 남긴다. 아래 줄만 열리면 어느 버튼이 연 것인지 모른다. */
+.add-due-toggle.is-on {
+  border-color: var(--focus);
+  color: var(--focus);
+}
+
+/* 입력창 줄 전체를 차지한다 — 추가 폼은 flex라 새 줄로 내려보내야 한다. */
+.add-due {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.add-due[hidden] {
+  display: none;
+}
+
+.add-due-label,
+.detail-label {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.add-due-date,
+.add-due-time {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+
+.add-due-date {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.add-due-time {
+  flex: none;
+}
+
+.add-due-clear {
+  flex: none;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.add-due-clear:hover {
+  color: var(--text);
+}
+
+/* ── 자세히 대화상자 ────────────────────────────────── */
+
+.dialog-detail {
+  width: min(420px, calc(100vw - 32px));
+}
+
+/* 무엇을 고치는 중인지. 길면 줄바꿈해서 다 보여준다 — 잘라내면 비슷한 제목을
+   가진 둘 중 어느 쪽인지 알 수 없다. */
+.detail-subject {
+  margin: 0 0 16px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.detail-field {
+  margin-bottom: 18px;
+}
+
+.detail-due {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.detail-note {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* 읽기만 하는 사실들. 값이 오른쪽에 붙어 두 줄이 나란히 읽힌다. */
+.detail-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 0 0 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.detail-facts dt {
+  color: var(--text-dim);
+}
+
+.detail-facts dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── 토스트 ─────────────────────────────────────────── */

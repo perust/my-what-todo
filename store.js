@@ -10,10 +10,10 @@
   const STORAGE_KEY = 'daily-todo:v1';
   const CORRUPTED_KEY = 'daily-todo:v1:corrupted';
   /**
-   * 5에서 미니 타이머 불투명도(miniOpacity), 6에서 빼놓은 창의 보기 방식(pipDial)이 늘었다.
-   * 키는 그대로 두고 이 숫자만 올린다.
+   * 5에서 미니 타이머 불투명도(miniOpacity), 6에서 빼놓은 창의 보기 방식(pipDial),
+   * 7에서 항목의 마감(dueAt)이 늘었다. 키는 그대로 두고 이 숫자만 올린다.
    */
-  const SCHEMA_VERSION = 6;
+  const SCHEMA_VERSION = 7;
   const MAX_TITLE = 100;
   const MAX_CATEGORY_NAME = 12;
 
@@ -115,6 +115,19 @@
   const PIP_DIAL_DEFAULT = true;
   const normalizePipDial = (value) =>
     typeof value === 'boolean' ? value : PIP_DIAL_DEFAULT;
+
+  /**
+   * 마감 시각. **초를 담지 않는다** — 화면에서 분까지만 고르고, 초가 섞이면
+   * 같은 분을 가리키는 값이 여럿 생겨 "같은 마감인가"를 물을 때마다 어긋난다.
+   * 없으면 `null`이다. 0은 1970년이라 뜻이 있는 값이지만 실수로 들어올 여지가 커서
+   * 함께 막는다 — 지금 이 앱이 다루는 어떤 할 일도 그때 마감일 수 없다.
+   */
+  const MIN_DUE = 1;
+  const normalizeDue = (value) => {
+    if (!Number.isFinite(value) || value < MIN_DUE) return null;
+    // 분 단위로 내린다. Date를 거치지 않아 시간대와 무관하다.
+    return Math.floor(value / 60000) * 60000;
+  };
 
   /** 처음 열었을 때 주어지는 세 가지. 이후로는 사용자가 늘리고 줄인다. */
   const DEFAULT_CATEGORIES = [
@@ -550,6 +563,8 @@
         completed: raw.completed === true,
         createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : Date.now(),
         completedAt: Number.isFinite(raw.completedAt) ? raw.completedAt : null,
+        // v6까지는 없던 자리다. 없으면 마감이 없는 것이고, 옮길 것이 없다.
+        dueAt: normalizeDue(raw.dueAt),
         order: Number.isFinite(raw.order) ? raw.order : 0
       });
     }
@@ -816,6 +831,7 @@
       completed: false,
       createdAt: Date.now(),
       completedAt: null,
+      dueAt: normalizeDue(fields.dueAt),
       order: nextOrder(fields.parentId)
     };
   }
@@ -971,6 +987,7 @@
     POMO_ROUNDS,
     POMO_MIN_MINUTES,
     POMO_MAX_MINUTES,
+    MIN_DUE,
 
     /** 회차별 길이(분). 복사본이라 UI가 목록을 직접 건드릴 수 없다. */
     getPomodoro() {
@@ -1276,7 +1293,8 @@
           title,
           category: cat,
           priority: parsed.priority,
-          tags: parsed.tags
+          tags: parsed.tags,
+          dueAt: parsed.dueAt
         });
         todos.push(item);
         invalidate();
@@ -1298,7 +1316,8 @@
           title,
           category: parent.category, // 하위는 상위를 상속한다
           priority: parsed.priority,
-          tags: parsed.tags
+          tags: parsed.tags,
+          dueAt: parsed.dueAt
         });
         todos.push(item);
         invalidate();
@@ -1333,6 +1352,14 @@
       }
       if (patch.tags !== undefined) {
         next.tags = Parse.normalizeTags(patch.tags);
+      }
+      // **마감은 지울 수 있어야 한다.** `null`을 "안 건드림"으로 읽으면 한 번 건 마감을
+      // 떼어낼 길이 없어진다. 안 건드리는 것은 키가 아예 없을 때(`undefined`)뿐이다.
+      if (patch.dueAt !== undefined) {
+        next.dueAt = patch.dueAt === null ? null : normalizeDue(patch.dueAt);
+        // 읽을 수 없는 값을 조용히 "마감 없음"으로 만들지 않는다. 지우려는 것과
+        // 잘못 넣은 것은 다른 일이라, 후자는 저장 실패와 같은 자리에서 거절한다.
+        if (patch.dueAt !== null && next.dueAt === null) return null;
       }
 
       return commit(() => {

@@ -20,6 +20,18 @@
   const input = document.getElementById('add-input');
   const category = document.getElementById('add-category');
   const priority = document.getElementById('add-priority');
+  const addDueToggle = document.getElementById('add-due-toggle');
+  const addDue = document.getElementById('add-due');
+  const addDueDate = document.getElementById('add-due-date');
+  const addDueTime = document.getElementById('add-due-time');
+  const addDueClear = document.getElementById('add-due-clear');
+  const detailDialog = document.getElementById('detail-dialog');
+  const detailSubject = document.getElementById('detail-subject');
+  const detailDueDate = document.getElementById('detail-due-date');
+  const detailDueTime = document.getElementById('detail-due-time');
+  const detailDueClear = document.getElementById('detail-due-clear');
+  const detailCreated = document.getElementById('detail-created');
+  const detailCompleted = document.getElementById('detail-completed');
   const list = document.getElementById('todo-list');
   const toast = document.getElementById('toast');
   const tabs = document.getElementById('category-tabs');
@@ -1856,7 +1868,29 @@
       }
     }
 
+    // 마감은 상위·하위 어디에나 붙는다. 하위만 따로 마감이 있는 일이 흔하다.
+    if (item.dueAt !== null) {
+      const due = el('span', 'todo-due');
+      due.textContent = formatDue(item.dueAt);
+      if (overdue(item)) {
+        due.classList.add('is-overdue');
+        // 색만으로 알리지 않는다. 읽어주는 쪽에도 같은 말이 가야 한다.
+        due.setAttribute('aria-label', `마감 지남: ${formatDue(item.dueAt)}`);
+      } else {
+        due.setAttribute('aria-label', `마감: ${formatDue(item.dueAt)}`);
+      }
+      row.appendChild(due);
+    }
+
     if (!context) {
+      const detail = el('button', 'todo-detail');
+      detail.type = 'button';
+      detail.dataset.action = 'detail';
+      detail.textContent = '⋯';
+      detail.setAttribute('aria-haspopup', 'dialog');
+      detail.setAttribute('aria-label', `자세히: ${item.title}`);
+      row.appendChild(detail);
+
       const remove = el('button', 'todo-delete');
       remove.type = 'button';
       remove.dataset.action = 'delete';
@@ -2053,6 +2087,97 @@
     return '추가했습니다. 지금 걸어둔 조건에 맞지 않아서 이 목록에는 나오지 않습니다.';
   }
 
+  // ────────────────────────────────────────────────────────────
+  // 마감 (F-24)
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * **`toISOString()`을 쓰지 않는다.** UTC라 한국 오전에는 하루 전 날짜가 나온다.
+   * `<input type="date">`가 주고받는 `YYYY-MM-DD`는 시간대가 없는 달력 날짜라,
+   * 그 자리에 UTC 날짜를 넣으면 사용자가 고른 날과 다른 날이 뜬다.
+   */
+  const pad2 = (value) => String(value).padStart(2, '0');
+  const dateFieldOf = (date) =>
+    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+  const timeFieldOf = (date) => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+
+  /**
+   * 두 칸의 값을 시각 하나로 합친다. 날짜가 비어 있으면 마감이 없는 것이다 —
+   * 시각만 적는 것은 뜻이 없다.
+   *
+   * **시각을 비우면 그날 끝(23:59)으로 본다.** 00:00으로 두면 "오늘까지"라고 적은
+   * 것이 오늘 아침에 이미 지난 것이 된다. 사람이 날짜만 적을 때 뜻하는 것은
+   * 그날 안이지 그날이 시작하는 순간이 아니다.
+   *
+   * 읽을 수 없는 값이면 `undefined`를 준다 — `null`(마감 없음)과 구별해야 한다.
+   */
+  function readDueFields(dateInput, timeInput) {
+    // **덜 입력한 칸을 "비어 있다"로 읽지 않는다.** `type="date"`는 연·월·일이 다
+    // 채워지기 전까지 `.value`가 빈 문자열이라, "2026. __. __"까지 치다 저장하면
+    // 걸어둔 마감이 소리 없이 지워진다. 브라우저는 그 상태를 badInput으로 알려준다.
+    if (dateInput.validity?.badInput || timeInput.validity?.badInput) return undefined;
+
+    const dateText = dateInput.value.trim();
+    if (!dateText) return null;
+
+    const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateText);
+    if (!parts) return undefined;
+    const [year, month, day] = parts.slice(1).map(Number);
+
+    let hour = 23;
+    let minute = 59;
+    const timeText = timeInput.value.trim();
+    if (timeText) {
+      const clock = /^(\d{2}):(\d{2})$/.exec(timeText);
+      if (!clock) return undefined;
+      [hour, minute] = clock.slice(1).map(Number);
+    }
+
+    // 지역 시간으로 만든다. 이 앱은 한 기기 안에서만 쓰이므로 그것이 사용자가 본 시각이다.
+    const at = new Date(year, month - 1, day, hour, minute, 0, 0);
+    if (Number.isNaN(at.getTime())) return undefined;
+    // 브라우저가 2026-02-31 같은 것을 3월 3일로 굴려버린다. 고른 날이 아니면 거절한다.
+    if (at.getFullYear() !== year || at.getMonth() !== month - 1 || at.getDate() !== day) {
+      return undefined;
+    }
+    return at.getTime();
+  }
+
+  function writeDueFields(dateInput, timeInput, dueAt) {
+    if (dueAt === null) {
+      dateInput.value = '';
+      timeInput.value = '';
+      return;
+    }
+    const at = new Date(dueAt);
+    dateInput.value = dateFieldOf(at);
+    timeInput.value = timeFieldOf(at);
+  }
+
+  /** 화면에 보이는 마감 표기. 올해면 연도를 빼고, 그날 끝이면 시각을 뺀다. */
+  function formatDue(dueAt) {
+    const at = new Date(dueAt);
+    const now = new Date();
+    const sameYear = at.getFullYear() === now.getFullYear();
+    const head = sameYear
+      ? `${at.getMonth() + 1}/${at.getDate()}`
+      : `${at.getFullYear()}. ${at.getMonth() + 1}/${at.getDate()}`;
+    // 23:59는 "날짜만 정했다"는 뜻이라 굳이 적지 않는다. 적으면 모든 줄이 그 숫자로 덮인다.
+    if (at.getHours() === 23 && at.getMinutes() === 59) return head;
+    return `${head} ${timeFieldOf(at)}`;
+  }
+
+  /** 마감이 지났는가. 완료한 것은 지났다고 하지 않는다 — 이미 끝난 일이다. */
+  const overdue = (item) =>
+    item.dueAt !== null && !item.completed && item.dueAt < Date.now();
+
+  function toggleAddDue(open) {
+    setHidden(addDue, !open);
+    setAttr(addDueToggle, 'aria-expanded', String(open));
+    addDueToggle.classList.toggle('is-on', open);
+    if (open) addDueDate.focus();
+  }
+
   function handleAdd() {
     const parsed = Parse.parseInput(input.value);
 
@@ -2060,10 +2185,22 @@
     // 제목에 `!`를 적었으면 그게 이긴다. 안 적었으면 옆 선택 상자의 값을 쓴다.
     const chosen = { ...parsed, priority: parsed.priority ?? Number(priority.value) };
 
+    // 마감 칸이 접혀 있으면 아예 묻지 않는다. 펼쳐두고 이상한 값을 적었으면
+    // **넣지 않고 그 자리를 알린다** — 조용히 마감 없이 넣으면 적어둔 것이 사라진다.
+    const due = addDue.hidden ? null : readDueFields(addDueDate, addDueTime);
+    if (due === undefined) {
+      addDueDate.focus();
+      showNotice('마감 날짜를 다시 확인해주세요.');
+      return;
+    }
+    chosen.dueAt = due;
+
     if (fits(parsed.title)) {
       const added = saved(Store.add(chosen, category.value));
       if (added) {
         input.value = '';
+        writeDueFields(addDueDate, addDueTime, null);
+        toggleAddDue(false);
         const note = hiddenNotice(added);
         // 알림을 render() 뒤에 둔다. render()도 알릴 것이 있으면 알리는데,
         // 방금 누른 것에 대한 답이 그 뒤에 서야 화면에 남는다.
@@ -2098,6 +2235,15 @@
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     handleAdd();
+  });
+
+  addDueToggle.addEventListener('click', () => toggleAddDue(addDue.hidden));
+
+  addDueClear.addEventListener('click', () => {
+    writeDueFields(addDueDate, addDueTime, null);
+    // 지우고 접는다. 비운 칸을 펼쳐두면 다음 추가에서 또 묻는 것처럼 보인다.
+    toggleAddDue(false);
+    input.focus();
   });
 
   // 한글 조합 중의 Enter는 IME가 글자를 확정하는 키다. 여기서 제출하면 두 번 들어간다.
@@ -2577,6 +2723,9 @@
         break;
       case 'add-child':
         openChildDraft(id);
+        break;
+      case 'detail':
+        openDetail(id);
         break;
       case 'delete':
         // Enter/Space로 누른 버튼 클릭은 detail이 0이다 — 마우스와 구분되는 지점.
@@ -3351,6 +3500,83 @@
    * 칸을 비우지도 않는다 — Esc로 닫았다가 다시 여는 길이 있고, 그때마다 비우면
    * 쓰던 글이 소리 없이 사라진다. 메일 앱에 넘긴 뒤에만 비운다.
    */
+  // ────────────────────────────────────────────────────────────
+  // 자세히 대화상자 (F-24)
+  // ────────────────────────────────────────────────────────────
+
+  /** 지금 무엇을 고치는 중인가. 닫히면 비운다. */
+  let detailFor = null;
+
+  const formatStamp = (timestamp) => {
+    const at = new Date(timestamp);
+    return `${at.getFullYear()}. ${at.getMonth() + 1}. ${at.getDate()}. ${timeFieldOf(at)}`;
+  };
+
+  function openDetail(id) {
+    const item = Store.getItem(id);
+    if (!item) return;
+
+    detailFor = id;
+    detailSubject.textContent = item.title;
+    writeDueFields(detailDueDate, detailDueTime, item.dueAt);
+    detailCreated.textContent = formatStamp(item.createdAt);
+    detailCompleted.textContent = item.completedAt === null
+      ? '아직 하지 않았습니다.'
+      : formatStamp(item.completedAt);
+
+    detailDialog.showModal();
+    detailDueDate.focus();
+  }
+
+  /**
+   * 저장하고 닫는다. 저장에 실패하면 **닫지 않는다** — 닫아버리면 고친 값이
+   * 어디로 갔는지 알 수 없고, 다시 열면 옛 값이 들어 있어 아무 일도 없던 것처럼 보인다.
+   */
+  function saveDetail() {
+    if (detailFor === null) return;
+
+    const due = readDueFields(detailDueDate, detailDueTime);
+    if (due === undefined) {
+      detailDueDate.focus();
+      showNotice('마감 날짜를 다시 확인해주세요.');
+      return;
+    }
+
+    // 바뀐 것이 없으면 저장하러 가지 않는다. 판 번호가 괜히 올라 다른 탭이 다시 읽는다.
+    const item = Store.getItem(detailFor);
+    if (item && item.dueAt === due) {
+      detailDialog.close();
+      return;
+    }
+
+    if (saved(Store.update(detailFor, { dueAt: due })) === null) return;
+    detailDialog.close();
+    render();
+  }
+
+  detailDialog.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-detail]');
+    if (!button) return;
+    if (button.dataset.detail === 'save') saveDetail();
+    else detailDialog.close();
+  });
+
+  detailDueClear.addEventListener('click', () => {
+    writeDueFields(detailDueDate, detailDueTime, null);
+    detailDueDate.focus();
+  });
+
+  /**
+   * 닫을 때 포커스를 열었던 `⋯`로 되돌린다. 안 그러면 몸통으로 떨어져, 키보드로
+   * 쓰던 사람이 목록 맨 위에서 다시 걸어 내려와야 한다. Esc로 닫는 길도 여기를 지난다.
+   */
+  detailDialog.addEventListener('close', () => {
+    const opener = detailFor;
+    detailFor = null;
+    if (opener === null) return;
+    nodeFor(opener)?.querySelector('[data-action="detail"]')?.focus();
+  });
+
   contactDialog.addEventListener('click', (e) => {
     const button = e.target.closest('[data-choice]');
     if (!button) return;

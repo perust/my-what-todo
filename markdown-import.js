@@ -19,7 +19,7 @@ format_version: 1
   const CATEGORY_KEYS = ['id', 'name', 'hue'];
   const TODO_KEYS = [
     'id', 'parentId', 'title', 'category', 'priority', 'tags',
-    'completed', 'createdAt', 'completedAt', 'order'
+    'completed', 'createdAt', 'completedAt', 'dueAt', 'order'
   ];
   const POMO_KEYS = ['focus', 'rest'];
   const SORTS = new Set(['priority', 'manual', 'created', 'category', 'completed']);
@@ -190,7 +190,11 @@ format_version: 1
   function validateCurrent(current) {
     assertPlainGraph(current);
     exactKeys(current, ROOT_KEYS);
-    if (own(current, 'version') !== 6) deny('INVALID_CURRENT');
+    // **일부러 숫자를 못박는다.** `Store.SCHEMA_VERSION`을 따라가게 하면 형식이 바뀔 때
+    // 이 관문이 조용히 통과시켜, 새로 늘어난 필드를 여기서 어떻게 다룰지 아무도 안 본다.
+    // 여기가 걸려 테스트가 깨지는 것이 곧 "그 필드를 검토하라"는 신호다.
+    // 올릴 때는 TODO_KEYS와 아래 항목 검증도 같이 본다.
+    if (own(current, 'version') !== 7) deny('INVALID_CURRENT');
     const theme = own(current, 'theme');
     if (theme !== null && theme !== 'light' && theme !== 'dark') deny('INVALID_CURRENT');
     if (!SORTS.has(own(current, 'sort'))) deny('INVALID_CURRENT');
@@ -248,6 +252,7 @@ format_version: 1
       const completed = own(item, 'completed');
       const createdAt = own(item, 'createdAt');
       const completedAt = own(item, 'completedAt');
+      const dueAt = own(item, 'dueAt');
       const order = own(item, 'order');
       if (typeof id !== 'string' || !id || byId.has(id) ||
           (parentId !== null && (typeof parentId !== 'string' || !parentId)) ||
@@ -259,7 +264,10 @@ format_version: 1
           ) ||
           typeof completed !== 'boolean' || typeof createdAt !== 'number' || !Number.isFinite(createdAt) ||
           (completedAt !== null && (typeof completedAt !== 'number' || !Number.isFinite(completedAt))) ||
-          (!completed && completedAt !== null) || !Number.isInteger(order) || order < 0) {
+          (!completed && completedAt !== null) ||
+          // 마감은 분 단위다. store가 내림해 담으므로 초가 섞인 값은 우리 것이 아니다.
+          (dueAt !== null && (!Number.isInteger(dueAt) || dueAt < 1 || dueAt % 60000 !== 0)) ||
+          !Number.isInteger(order) || order < 0) {
         deny('INVALID_CURRENT');
       }
       try {
@@ -404,6 +412,10 @@ format_version: 1
       createdAt: own(current, 'createdAt'),
       completedAt: match[2] === (own(current, 'completed') ? 'x' : ' ')
         ? own(current, 'completedAt') : null,
+      // 마감은 Markdown 한 줄에 적히지 않는다. 파일에서 고칠 수 있는 것이 아니므로
+      // **지금 값을 그대로 들고 온다** — 빠뜨리면 파일을 한 번 왕복하는 것만으로
+      // 걸어둔 마감이 전부 지워진다. createdAt과 같은 성격의 자리다.
+      dueAt: own(current, 'dueAt'),
       order: child ? (children.get(lastRoot.id)?.length || 0) : roots.length
     };
     if (child) {

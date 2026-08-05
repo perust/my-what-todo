@@ -40,7 +40,7 @@ function loadStore(options = {}) {
 
 function baseData(overrides = {}) {
   return {
-    version: 6,
+    version: 7,
     theme: null,
     sort: 'manual',
     pomodoro: [
@@ -632,6 +632,11 @@ class FakeElement {
     this._hidden = false;
     this.open = false;
     this.value = '';
+    /**
+     * `type="date"`는 덜 입력된 상태를 `.value`가 아니라 여기로 알린다.
+     * 스텁이 이걸 안 가지면 "연도만 치다 저장" 경로를 검사할 방법이 없다.
+     */
+    this.validity = { badInput: false };
     this.checked = false;
     this.disabled = false;
     this.selectionStart = 0;
@@ -746,7 +751,16 @@ class FakeElement {
    */
   click() { this.dispatch('click', { detail: 0 }); }
   showModal() { this.open = true; }
-  close() { this.open = false; }
+  /**
+   * 진짜 `<dialog>`는 닫힐 때 `close` 이벤트를 쏜다. 그것을 흉내 내지 않으면
+   * 닫힘에 걸어둔 일(포커스를 여는 버튼으로 되돌리기 등)이 검사에서 통째로 빠진다.
+   * Esc로 닫는 길도 브라우저에서는 같은 이벤트를 지난다.
+   */
+  close() {
+    if (!this.open) return;
+    this.open = false;
+    this.dispatch('close', { type: 'close' });
+  }
   getBoundingClientRect() { return { left: 0, top: 0, right: 100, bottom: 100, height: 100 }; }
 }
 
@@ -1093,6 +1107,7 @@ function loadApp(options = {}) {
         queuedNoticeSpontaneous, pendingMarkdownImport };
     },
 
+    readDueFields, formatDue, openDetail, saveDetail,
     syncPomoSettings, paintMiniVeil, openPip, PIP_ICONS,
     restorePomoRun, renderPomo, pomoRefresh, pomoFinish, pomoAdvance, pomoAct,
     cycleEnter, pomoSet, togglePomo, togglePomoView, reflectLengthChange,
@@ -3018,6 +3033,211 @@ test('저절로 뜬 알림은 나중에 온 답에 자리를 내준다', () => {
   later.sandbox.__appTest.showTimerNotice('집중 구간이 끝났습니다.');
   later.sandbox.__appTest.showTimerNotice('휴식 구간이 끝났습니다.');
   assert.equal(later.sandbox.__appTest.state().queuedNotice, '휴식 구간이 끝났습니다.');
+});
+
+// ── 마감 (F-24) ────────────────────────────────────────
+
+test('마감은 분 단위로 내려 담고, 읽을 수 없는 값은 마감 없음이 된다', () => {
+  const { Store } = loadStore({ context: true });
+  const item = (over) => ({
+    id: 'a', parentId: null, title: '가', category: 'work', priority: 1, tags: [],
+    completed: false, createdAt: 100, completedAt: null, order: 0, ...over
+  });
+
+  // 초가 섞이면 같은 분을 가리키는 값이 여럿 생겨 "같은 마감인가"가 매번 어긋난다.
+  assert.ok(Store.importData(baseData({ todos: [item({ dueAt: 1786000037123 })] })));
+  assert.equal(Store.exportData().todos[0].dueAt, 1786000020000);
+  assert.equal(Store.exportData().todos[0].dueAt % 60000, 0);
+
+  for (const bad of [undefined, null, 'nope', {}, Number.NaN, Infinity, -5, 0]) {
+    const one = loadStore({ context: true });
+    assert.ok(one.Store.importData(baseData({ todos: [item({ dueAt: bad })] })));
+    assert.equal(one.Store.exportData().todos[0].dueAt, null, String(bad));
+  }
+});
+
+test('v6 저장본을 열면 마감 없는 항목으로 이어진다', () => {
+  const { Store, localStorage } = loadStore({ context: true });
+  const old = baseData({
+    todos: [{
+      id: 'a', parentId: null, title: '옛 항목', category: 'work', priority: 1, tags: [],
+      completed: false, createdAt: 100, completedAt: null, order: 0
+    }]
+  });
+  old.version = 6;
+  localStorage.setItem('daily-todo:v1', JSON.stringify(old));
+  Store.load();
+
+  assert.equal(Store.wasCorrupted, false, '옛 형식은 손상이 아니다');
+  assert.equal(Store.getRoots().length, 1);
+  assert.equal(Store.getItem('a').dueAt, null);
+  assert.equal(Store.getItem('a').title, '옛 항목');
+});
+
+test('마감은 지울 수 있고, 읽을 수 없는 값은 거절한다', () => {
+  const { Store } = loadStore({ context: true });
+  const made = Store.add({ title: '가', priority: 1, tags: [], dueAt: 1786000020000 }, 'work');
+  assert.equal(made.dueAt, 1786000020000);
+
+  // **null은 "안 건드림"이 아니라 "지움"이다.** 안 건드리는 것은 키가 없을 때뿐이다.
+  assert.ok(Store.update(made.id, { dueAt: null }));
+  assert.equal(Store.getItem(made.id).dueAt, null);
+
+  assert.ok(Store.update(made.id, { dueAt: 1786000080000 }));
+  assert.ok(Store.update(made.id, { title: '나' }), 'dueAt 키가 없으면 그대로 둔다');
+  assert.equal(Store.getItem(made.id).dueAt, 1786000080000);
+
+  // 지우려는 것과 잘못 넣은 것은 다른 일이다. 후자를 조용히 "마감 없음"으로 만들지 않는다.
+  for (const bad of ['2026-08-06', Number.NaN, {}, -1, 0]) {
+    assert.equal(Store.update(made.id, { dueAt: bad }), null, String(bad));
+    assert.equal(Store.getItem(made.id).dueAt, 1786000080000, '거절했으면 값이 그대로다');
+  }
+});
+
+test('하위도 자기 마감을 가진다', () => {
+  const { Store } = loadStore({ context: true });
+  const parent = Store.add({ title: '상위', priority: 1, tags: [] }, 'work');
+  const child = Store.addChild(parent.id, { title: '하위', priority: 1, tags: [], dueAt: 1786000020000 });
+  assert.equal(parent.dueAt, null);
+  assert.equal(child.dueAt, 1786000020000);
+});
+
+test('시각을 비우면 그날 끝이 되고, 덜 친 날짜는 마감을 지우지 않는다', () => {
+  const app = loadApp();
+  const hooks = app.sandbox.__appTest;
+  const date = app.document.getElementById('add-due-date');
+  const time = app.document.getElementById('add-due-time');
+
+  // 날짜만 적으면 그날 23:59다. 00:00으로 두면 "오늘까지"가 오늘 아침에 이미 지난다.
+  date.value = '2026-08-06';
+  time.value = '';
+  const end = new Date(hooks.readDueFields(date, time));
+  assert.equal(end.getHours(), 23);
+  assert.equal(end.getMinutes(), 59);
+  assert.equal(end.getDate(), 6);
+
+  date.value = '2026-08-06';
+  time.value = '09:30';
+  const at = new Date(hooks.readDueFields(date, time));
+  assert.equal(at.getHours(), 9);
+  assert.equal(at.getMinutes(), 30);
+
+  // 비어 있으면 마감이 없는 것이다 (null). 시각만 적는 것은 뜻이 없다.
+  date.value = '';
+  time.value = '09:30';
+  assert.equal(hooks.readDueFields(date, time), null);
+
+  // **덜 친 것은 비어 있는 것과 다르다.** `type="date"`는 연·월·일이 다 채워지기 전까지
+  // .value가 빈 문자열이라, 그대로 읽으면 걸어둔 마감이 소리 없이 지워진다.
+  date.value = '';
+  date.validity.badInput = true;
+  assert.equal(hooks.readDueFields(date, time), undefined, 'null(지움)과 구별해야 한다');
+  date.validity.badInput = false;
+
+  // 굴러가는 날짜(2월 31일)는 3월로 넘어가버린다. 고른 날이 아니면 거절한다.
+  date.value = '2026-02-31';
+  time.value = '';
+  assert.equal(hooks.readDueFields(date, time), undefined);
+});
+
+test('마감 배지는 날짜만 정했으면 시각을 적지 않는다', () => {
+  const app = loadApp();
+  const hooks = app.sandbox.__appTest;
+  const at = (y, m, d, h, min) => new Date(y, m - 1, d, h, min).getTime();
+  const year = new Date().getFullYear();
+
+  // 23:59는 "날짜만 정했다"는 뜻이다. 적으면 모든 줄이 그 숫자로 덮인다.
+  assert.equal(hooks.formatDue(at(year, 8, 6, 23, 59)), '8/6');
+  assert.equal(hooks.formatDue(at(year, 8, 6, 9, 30)), '8/6 09:30');
+  // 올해가 아니면 연도를 붙인다 — 안 붙이면 작년 8/6과 올해 8/6이 같은 글이 된다.
+  assert.equal(hooks.formatDue(at(year + 1, 8, 6, 23, 59)), `${year + 1}. 8/6`);
+});
+
+/**
+ * 대화상자 안의 버튼은 id가 없어 스텁이 만들어주지 않는다. 누른 버튼을 흉내 내
+ * 위임 핸들러에 직접 쏜다 — 문의 대화상자 테스트와 같은 방식이다.
+ */
+const press = (dialog, choice) => dialog.dispatch('click', {
+  target: { closest: (sel) => (sel === '[data-detail]' ? { dataset: { detail: choice } } : null) }
+});
+
+/**
+ * 자세히 대화상자는 항목을 실제로 들고 있는 store가 있어야 볼 수 있다.
+ * 기본 mockStore는 목록이 늘 비어 있어 행이 하나도 안 그려진다.
+ */
+function appWithItems(options = {}) {
+  const base = loadApp().Store;
+  const items = [];
+  const Store = { ...base,
+    add(parsed, category) {
+      const item = { id: `t${items.length + 1}`, parentId: null, title: parsed.title,
+        category, priority: parsed.priority, tags: parsed.tags, completed: false,
+        createdAt: 100, completedAt: null, dueAt: parsed.dueAt ?? null, order: items.length };
+      items.push(item);
+      return item;
+    },
+    getRoots() { return items.map((item) => ({ ...item })); },
+    getChildren() { return []; },
+    getItem(id) { const hit = items.find((item) => item.id === id); return hit ? { ...hit } : null; },
+    update(id, patch) {
+      if (options.failWrites) return null;
+      const hit = items.find((item) => item.id === id);
+      if (!hit) return null;
+      Object.assign(hit, patch);
+      return { ...hit };
+    },
+    getStats() { return { done: 0, total: items.length, percent: 0 }; }
+  };
+  return { ...loadApp({ ...options, Store }), items };
+}
+
+test('자세히를 열면 지금 값이 들어오고, 저장하면 여는 버튼으로 돌아온다', () => {
+  const app = appWithItems();
+  const hooks = app.sandbox.__appTest;
+  const doc = app.document;
+  const made = app.Store.add({ title: '가', priority: 1, tags: [] }, 'work');
+  hooks.render();
+
+  const list = doc.getElementById('todo-list');
+  const opener = list.querySelectorAll('[data-action="detail"]')[0];
+  assert.ok(opener, '행에 ⋯ 버튼이 있어야 한다');
+  // 스텁은 버블링을 흉내 내지 않는다. 위임 핸들러가 걸린 목록에 직접 쏜다.
+  list.dispatch('click', { target: opener });
+
+  const dialog = doc.getElementById('detail-dialog');
+  assert.equal(dialog.open, true);
+  assert.equal(doc.getElementById('detail-subject').textContent, '가');
+  assert.equal(doc.getElementById('detail-due-date').value, '', '마감이 없으면 빈 칸이다');
+
+  doc.getElementById('detail-due-date').value = '2026-08-06';
+  doc.getElementById('detail-due-time').value = '09:30';
+  press(dialog, 'save');
+
+  assert.equal(dialog.open, false);
+  const saved = app.Store.getItem(made.id);
+  assert.equal(new Date(saved.dueAt).getHours(), 9);
+
+  // 닫을 때 몸통으로 떨어지면 키보드로 쓰던 사람이 목록 위에서 다시 걸어 내려와야 한다.
+  assert.equal(doc.activeElement?.dataset?.action, 'detail');
+});
+
+test('저장에 실패하면 자세히를 닫지 않는다', () => {
+  // 닫아버리면 고친 값이 어디로 갔는지 알 수 없고, 다시 열면 옛 값이 들어 있어
+  // 아무 일도 없던 것처럼 보인다.
+  const app = appWithItems({ failWrites: true });
+  const hooks = app.sandbox.__appTest;
+  const doc = app.document;
+  app.Store.add({ title: '가', priority: 1, tags: [] }, 'work');
+  hooks.render();
+
+  const list = doc.getElementById('todo-list');
+  list.dispatch('click', { target: list.querySelectorAll('[data-action="detail"]')[0] });
+  const dialog = doc.getElementById('detail-dialog');
+  assert.equal(dialog.open, true);
+
+  doc.getElementById('detail-due-date').value = '2026-08-06';
+  press(dialog, 'save');
+  assert.equal(dialog.open, true, '실패했으면 열린 채로 남아야 한다');
 });
 
 (async () => {

@@ -234,7 +234,27 @@
         <option value="2">2</option>
         <option value="3">3</option>
       </select>
+      <!-- 마감을 여는 버튼. 늘 펼쳐두면 안 쓰는 사람에게 줄 하나가 늘 붙는다. -->
+      <button type="button" id="add-due-toggle" class="add-due-toggle"
+              aria-label="마감 정하기" aria-expanded="false" aria-controls="add-due">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
+          <rect x="3.5" y="5" width="17" height="15.5" rx="2.4" fill="none"
+                stroke="currentColor" stroke-width="1.7"/>
+          <path d="M3.5 9.5h17M8 3.5v3M16 3.5v3" fill="none"
+                stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+      </button>
       <button type="submit" class="add-button">추가</button>
+
+      <!-- 날짜와 시각을 나눠 받는다. 브라우저가 주는 입력을 그대로 쓴다 —
+           직접 만든 달력은 키보드·스크린리더를 처음부터 다시 만드는 일이다.
+           시각을 비우면 날짜만 정한 것으로 보고 그날 끝(23:59)으로 맞춘다. -->
+      <div id="add-due" class="add-due" hidden>
+        <label class="add-due-label" for="add-due-date">마감</label>
+        <input id="add-due-date" class="add-due-date" type="date" aria-label="마감 날짜">
+        <input id="add-due-time" class="add-due-time" type="time" aria-label="마감 시각">
+        <button type="button" id="add-due-clear" class="add-due-clear">지우기</button>
+      </div>
     </form>
     <!-- 입력창에 aria-describedby로 묶는다. 그러지 않으면 !와 # 문법이 화면에만 있고
          스크린리더로는 알 길이 없다. -->
@@ -550,6 +570,40 @@
     받는 주소는 마크업에 적지 않는다 — 공개 저장소라 소스에 그대로 있으면 수집기가
     긁어간다. app.js가 조각을 이어 붙여 이 자리에 넣는다.
   -->
+  <!--
+    할 일 하나의 자세한 설정. **행에 자리가 없는 것만 여기 둔다** — 제목·우선순위·
+    카테고리는 행에서 바로 고치는 빠른 길이 이미 있고, 같은 것을 두 곳에 두면
+    한쪽만 고치는 실수가 생긴다. 여는 것은 행의 `⋯` 하나뿐이다.
+  -->
+  <dialog id="detail-dialog" class="dialog dialog-detail"
+          aria-labelledby="detail-dialog-title">
+    <h2 id="detail-dialog-title" class="dialog-title">자세히</h2>
+    <!-- 무엇을 고치는 중인지 늘 보인다. 여기서는 고칠 수 없다 — 제목은 행에서 고친다. -->
+    <p id="detail-subject" class="detail-subject"></p>
+
+    <div class="detail-field">
+      <span class="detail-label" id="detail-due-label">마감</span>
+      <div class="detail-due" role="group" aria-labelledby="detail-due-label">
+        <input id="detail-due-date" class="add-due-date" type="date" aria-label="마감 날짜">
+        <input id="detail-due-time" class="add-due-time" type="time" aria-label="마감 시각">
+        <button type="button" id="detail-due-clear" class="add-due-clear">지우기</button>
+      </div>
+      <!-- 시각을 비우면 그날 끝으로 본다는 것을 미리 말한다. 말하지 않으면
+           23:59가 어디서 왔는지 알 수 없다. -->
+      <p class="detail-note">시각을 비우면 그날 23:59로 맞춥니다.</p>
+    </div>
+
+    <dl class="detail-facts">
+      <dt>만든 날</dt><dd id="detail-created"></dd>
+      <dt>완료</dt><dd id="detail-completed"></dd>
+    </dl>
+
+    <div class="dialog-actions">
+      <button type="button" class="dialog-button" data-detail="cancel">취소</button>
+      <button type="button" class="dialog-button dialog-primary" data-detail="save">저장</button>
+    </div>
+  </dialog>
+
   <dialog id="contact-dialog" class="dialog dialog-contact"
           aria-labelledby="contact-dialog-title" aria-describedby="contact-dialog-note">
     <h2 id="contact-dialog-title" class="dialog-title">문의하기</h2>

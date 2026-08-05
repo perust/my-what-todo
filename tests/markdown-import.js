@@ -19,7 +19,7 @@ function load() {
 
 function snapshot(overrides = {}) {
   return {
-    version: 6,
+    version: 7,
     theme: 'dark',
     sort: 'manual',
     pomodoro: [
@@ -40,7 +40,7 @@ function snapshot(overrides = {}) {
 function todo(id, fields = {}) {
   return {
     id, parentId: null, title: id, category: 'work', priority: 1,
-    tags: [], completed: false, createdAt: 100, completedAt: null, order: 0,
+    tags: [], completed: false, createdAt: 100, completedAt: null, dueAt: null, order: 0,
     ...fields
   };
 }
@@ -516,6 +516,47 @@ test('parse 실패는 isolated Store를 mutation하지 않고 error object에 ra
   const exposed = Reflect.ownKeys(error).map((key) => String(error[key])).join('|');
   assert.equal(exposed.includes(secret), false);
   assert.equal(exposed.includes(lineFor(bad, secret) ?? secret), false);
+});
+
+test('마감은 파일에 적히지 않지만 왕복해도 살아남는다', () => {
+  const { MarkdownExport, MarkdownImport } = load();
+  const due = 1786000020000;
+  const current = snapshot({ todos: [
+    todo('kept', { dueAt: due }),
+    todo('none', { order: 1 })
+  ] });
+  const text = MarkdownExport.render(current);
+
+  // 한 줄에 마감이 없다는 것부터 확인한다. 적히기 시작하면 파일에서 고칠 수 있게
+  // 되므로 파서도 함께 바뀌어야 한다 — 그 결정을 조용히 넘기지 않는다.
+  assert.ok(!text.includes(String(due)), '마감은 Markdown 한 줄에 적히지 않는다');
+
+  // **지금 값을 그대로 들고 와야 한다.** 빠뜨리면 파일을 한 번 왕복하는 것만으로
+  // 걸어둔 마감이 전부 지워진다.
+  const same = MarkdownImport.parse(text, current);
+  assert.equal(same.data.todos.find((item) => item.id === 'kept').dueAt, due);
+  assert.equal(same.data.todos.find((item) => item.id === 'none').dueAt, null);
+
+  // 제목을 고쳐도 마감은 따라온다 — createdAt과 같은 성격의 자리다.
+  const edited = MarkdownImport.parse(
+    replaceLine(text, 'kept', '- [ ] (P1) 고친 제목 <!-- my-what-todo:id=kept -->'), current);
+  const kept = edited.data.todos.find((item) => item.id === 'kept');
+  assert.equal(kept.title, '고친 제목');
+  assert.equal(kept.dueAt, due);
+});
+
+test('초가 섞인 마감을 가진 현재 데이터는 우리 것이 아니다', () => {
+  // store가 분 단위로 내려 담으므로 초가 남아 있으면 다른 데서 온 값이다.
+  // 관문 셋의 기준이 어긋나면 앱이 자기 저장본 때문에 사용자 파일을 탓하게 된다.
+  const { MarkdownExport, MarkdownImport } = load();
+  const clean = snapshot({ todos: [todo('a', { dueAt: 1786000020000 })] });
+  const text = MarkdownExport.render(clean);
+
+  for (const bad of [1786000020001, 1786000037123, 0, -60000, 1.5, '1786000020000']) {
+    const dirty = snapshot({ todos: [todo('a', { dueAt: bad })] });
+    expectError(() => MarkdownImport.parse(text, dirty), 'INVALID_CURRENT');
+  }
+  assert.ok(MarkdownImport.parse(text, clean));
 });
 
 (async () => {
