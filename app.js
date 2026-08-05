@@ -467,6 +467,16 @@
     if (node.getAttribute(name) !== value) node.setAttribute(name, value);
   };
 
+  /**
+   * 숨김도 마찬가지다. **다만 한쪽만 새는 것이라 눈에 잘 띄지 않는다** —
+   * 이미 숨은 것에 `hidden = true`를 다시 넣으면 속성이 그대로 다시 쓰이는데,
+   * 이미 보이는 것에 `false`를 넣는 것은 아무 일도 아니다. 그래서 "늘 숨어 있는
+   * 자리"만 1초마다 조용히 쓰이고 있었다 — 재보니 초당 일곱 번 중 두 번이 그것이었다.
+   */
+  const setHidden = (node, value) => {
+    if (node.hidden !== value) node.hidden = value;
+  };
+
   // 눈금 둘레는 변하지 않는다. 채워지는 길이만 매초 바뀐다.
   pomoDialFill.style.strokeDasharray = String(DIAL_LENGTH);
 
@@ -784,9 +794,47 @@
     const clock = pomoClock(pomoLeft);
     const label = phaseLabel();
 
+    // 흐른 만큼 원이 채워진다. 빼놓은 창의 시계도 같은 값을 쓰므로 먼저 구한다.
+    const done = pomoLength > 0 ? 1 - pomoLeft / pomoLength : 0;
+    const offset = String(DIAL_LENGTH * (1 - done));
+
+    // 접혀 있어도 보이는 것 — 헤더 버튼, 문서 제목, 미니 타이머, 빼놓은 창.
+    pomoButton.classList.toggle('is-running', running || waiting);
+    pomoButton.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
+
+    // 배경 탭에서도 남은 시간이 보이게 제목에 얹는다.
+    // 기다리는 중에는 남은 시간 대신 **누를 것**을 적는다 — 00:00만 적으면
+    // 탭 목록에서는 멈춘 것인지 끝난 것인지 갈라지지 않는다.
+    const title = waiting
+      ? `${nextLabel()} · ${BASE_TITLE}`
+      : running
+        ? `${clock} · ${BASE_TITLE}`
+        : BASE_TITLE;
+    if (document.title !== title) document.title = title;
+
+    renderMini(clock, label);
+    renderPip(clock, label, offset);
+
+    // 상태가 바뀐 자리마다 부르지 않는다. 어차피 전부 여기를 지나므로 여기서 한 번만 본다.
+    savePomoRun();
+
+    renderPomoPanel(clock, label, offset, running, waiting);
+  }
+
+  /**
+   * 패널 안쪽. **접혀 있으면 그리지 않는다** — 아무도 못 보는 자리에 1초마다 쓰는
+   * 셈이고, 재보니 패널을 닫아둔 채 타이머를 돌릴 때 일어나는 변경의 절반 이상이
+   * 여기였다. 펼친 시계도 마찬가지라 한 겹 더 나눈다.
+   *
+   * 펴는 자리(`togglePomo`·`togglePomoView`)가 그 직후에 `renderPomo`를 다시 부르므로,
+   * 펴는 순간 채워진다. 접힌 동안 밀린 것이 남지 않는다.
+   */
+  function renderPomoPanel(clock, label, offset, running, waiting) {
+    if (pomoPanel.hidden) return;
+
     setText(pomoTime, clock);
     setText(pomoPhase, label);
-    pomoPhase.hidden = label === '';
+    setHidden(pomoPhase, label === '');
 
     // 기다리는 동안에는 `다시 시작`을 치운다. 나란히 두면 방금 끝난 구간을 한 번 더
     // 도는 버튼과 사이클을 잇는 버튼이 같은 줄에 서서, 어느 쪽이 이어가는 것인지
@@ -798,27 +846,15 @@
     const handOverToNext = waiting && document.activeElement === pomoToggle;
 
     if (waiting) setText(pomoNext, nextLabel());
-    pomoNext.hidden = !waiting;
-    pomoToggle.hidden = waiting;
+    setHidden(pomoNext, !waiting);
+    setHidden(pomoToggle, waiting);
     setText(pomoToggle, runLabel());
     if (handOverToNext) pomoNext.focus();
 
     pomoPanel.classList.toggle('is-waiting', waiting);
     pomoPanel.classList.toggle('is-running', running);
     pomoPanel.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
-    pomoButton.classList.toggle('is-running', running || waiting);
-    pomoButton.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
     pomoCycleButton.classList.toggle('is-active', inCycle());
-
-    // 배경 탭에서도 남은 시간이 보이게 제목에 얹는다.
-    // 기다리는 중에는 남은 시간 대신 **누를 것**을 적는다 — 00:00만 적으면
-    // 탭 목록에서는 멈춘 것인지 끝난 것인지 갈라지지 않는다.
-    const title = waiting
-      ? `${nextLabel()} · ${BASE_TITLE}`
-      : running
-        ? `${clock} · ${BASE_TITLE}`
-        : BASE_TITLE;
-    if (document.title !== title) document.title = title;
 
     // 지금 무엇으로 돌아갈지는 켜진 버튼 하나로 읽는다. 프리셋 중 어느 것도 아니면
     // 직접 입력한 길이라는 뜻이므로 `설정`을 켠다 — 아무것도 켜져 있지 않으면
@@ -837,19 +873,13 @@
     pomoPip.classList.toggle('is-active', popped);
     setAttr(pomoPip, 'aria-label', popped ? '타이머 창 닫기' : '타이머를 창으로 빼기');
 
-    // 흐른 만큼 원이 채워진다. 빼놓은 창의 시계도 같은 값을 쓴다.
-    const done = pomoLength > 0 ? 1 - pomoLeft / pomoLength : 0;
-    const offset = String(DIAL_LENGTH * (1 - done));
+    // 펼친 시계도 접혀 있으면 그리지 않는다. 기본이 접힌 상태다.
+    if (pomoDial.hidden) return;
+
     pomoDialFill.style.strokeDashoffset = offset;
     setText(pomoDialTime, clock);
     setText(pomoDialPhase, label || `${Math.round(pomoLength / 60)}분`);
     renderDots();
-
-    renderMini(clock, label);
-    renderPip(clock, label, offset);
-
-    // 상태가 바뀐 자리마다 부르지 않는다. 어차피 전부 여기를 지나므로 여기서 한 번만 본다.
-    savePomoRun();
   }
 
   // ────────────────────────────────────────────────────────────
@@ -883,7 +913,7 @@
     // 별도 창으로 빼놓았으면 이쪽은 접는다. 같은 시계를 두 군데 띄울 이유가 없다.
     const show = pomoActive() && pomoPanel.hidden && !miniDismissed && pipWindow === null;
 
-    pomoMini.hidden = !show;
+    setHidden(pomoMini, !show);
     // 토스트가 이 자리로 올라오지 않게 알린다. 겹치면 방금 생긴 `휴식 시작` 버튼이
     // 그 사실을 알리는 알림에 가려, 알리려던 그 동작을 누를 수 없게 된다.
     document.body.classList.toggle('has-mini', show);
@@ -894,7 +924,7 @@
     setText(pomoMiniTime, clock);
     setText(pomoMiniPhase, label || `${Math.round(pomoLength / 60)}분`);
     if (waiting) setText(pomoMiniNext, nextLabel());
-    pomoMiniNext.hidden = !waiting;
+    setHidden(pomoMiniNext, !waiting);
 
     pomoMini.classList.toggle('is-running', pomoEndsAt !== null);
     pomoMini.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');

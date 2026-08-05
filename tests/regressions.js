@@ -547,6 +547,23 @@ class FakeElement {
   getBoundingClientRect() { return { left: 0, top: 0, right: 100, bottom: 100, height: 100 }; }
 }
 
+/**
+ * `index.html`에서 접힌 채로 시작하는 자리들.
+ *
+ * 가짜 요소는 전부 보이는 채로 태어난다. 그대로 두면 **접힌 자리를 건너뛰는 코드가
+ * 검사에서 통째로 사라진다** — 실제로는 안 그리는데 테스트에서는 그리고 있었다.
+ * 마크업에서 읽어 와 같은 상태로 세운다.
+ */
+const HIDDEN_AT_START = (() => {
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const out = new Set();
+  for (const [tag] of html.matchAll(/<[a-z][a-z0-9]*\b[^>]*>/gi)) {
+    const id = /\bid="([\w-]+)"/.exec(tag);
+    if (id && /\shidden(?=[\s>/])/.test(tag)) out.add(id[1]);
+  }
+  return out;
+})();
+
 function makeDocument() {
   const ids = new Map();
   const document = {
@@ -562,7 +579,12 @@ function makeDocument() {
     // 검사하는 것은 붙은 속성과 클래스이지 그리기가 아니다.
     createElementNS(ns, tag) { return new FakeElement(tag, document); },
     getElementById(id) {
-      if (!ids.has(id)) { const node = new FakeElement('div', document); node.id = id; ids.set(id, node); }
+      if (!ids.has(id)) {
+        const node = new FakeElement('div', document);
+        node.id = id;
+        node.hidden = HIDDEN_AT_START.has(id);
+        ids.set(id, node);
+      }
       return ids.get(id);
     },
     querySelector(selector) {
@@ -840,7 +862,7 @@ function loadApp(options = {}) {
 
     syncPomoSettings, paintMiniVeil, openPip, PIP_ICONS,
     restorePomoRun, renderPomo, pomoRefresh, pomoFinish, pomoAdvance, pomoAct,
-    cycleEnter, pomoSet, togglePomo, reflectLengthChange,
+    cycleEnter, pomoSet, togglePomo, togglePomoView, reflectLengthChange,
     pomoState() {
       return { pomoLength, pomoLeft, pomoEndsAt, cycleRound, cyclePhase, pendingNext, miniDismissed };
     },
@@ -1717,6 +1739,7 @@ const lastRun = (app) => app.savedRuns[app.savedRuns.length - 1];
 test('사이클 집중이 끝나면 다음 구간으로 넘어가지 않고 휴식 시작을 기다린다', () => {
   const app = loadApp();
   const t = app.sandbox.__appTest;
+  t.togglePomo(true); // 패널 안을 볼 것이므로 사용자가 하듯 먼저 편다
   const chimes = countChimes(app);
 
   t.cycleEnter(0, 'focus', true);
@@ -1751,6 +1774,7 @@ test('사이클 집중이 끝나면 다음 구간으로 넘어가지 않고 휴�
 test('휴식이 끝날 때도 기다리고, 누르면 다음 회차 집중으로 넘어간다', () => {
   const app = loadApp();
   const t = app.sandbox.__appTest;
+  t.togglePomo(true); // 패널 안을 볼 것이므로 사용자가 하듯 먼저 편다
 
   t.cycleEnter(0, 'rest', true);
   t.expirePomo();
@@ -1768,6 +1792,7 @@ test('휴식이 끝날 때도 기다리고, 누르면 다음 회차 집중으로
 test('마지막 회차 집중 뒤에는 긴 휴식을 기다리고, 그 뒤 1회차로 돌아온다', () => {
   const app = loadApp();
   const t = app.sandbox.__appTest;
+  t.togglePomo(true); // 패널 안을 볼 것이므로 사용자가 하듯 먼저 편다
 
   t.cycleEnter(3, 'focus', true);
   t.expirePomo();
@@ -1851,6 +1876,7 @@ test('돌아갈 시간이 남은 기록에서는 함께 적힌 대기 구간을 
 test('기다리는 중 회차 길이를 고쳐도 대기가 지워지지 않고 새 길이로 시작한다', () => {
   const app = loadApp();
   const t = app.sandbox.__appTest;
+  t.togglePomo(true); // 패널 안을 볼 것이므로 사용자가 하듯 먼저 편다
 
   t.cycleEnter(0, 'focus', true);
   t.expirePomo();
@@ -1877,6 +1903,7 @@ test('기다리는 중 회차 길이를 고쳐도 대기가 지워지지 않고 
 test('단일 타이머는 기다리지 않고 00:00에서 다시 시작을 남긴다', () => {
   const app = loadApp();
   const t = app.sandbox.__appTest;
+  t.togglePomo(true); // 패널 안을 볼 것이므로 사용자가 하듯 먼저 편다
 
   t.pomoSet(60);
   t.pomoAct();          // 시작
@@ -1893,6 +1920,7 @@ test('초기화와 프리셋은 기다리던 구간을 함께 걷어낸다', () 
   for (const clear of ['reset', 'preset']) {
     const app = loadApp();
     const t = app.sandbox.__appTest;
+    t.togglePomo(true);
     t.cycleEnter(1, 'focus', true);
     t.expirePomo();
     assert.notEqual(t.pomoState().pendingNext, null);
@@ -2036,6 +2064,7 @@ test('빼놓은 창의 아이콘과 읽히는 이름은 상태를 따라간다',
   const t = app.sandbox.__appTest;
   const ICONS = t.PIP_ICONS;
 
+  t.togglePomo(true); // 아래에서 패널의 글자와 견준다
   t.cycleEnter(0, 'focus', true);
   await t.openPip();
   const p = pipParts(app);
@@ -2121,10 +2150,14 @@ test('빼놓은 창은 테마를 따라가고, 닫으면 인터벌과 참조를 
   p.win.close();
   assert.equal(app.pipWindow, null);
   assert.equal(app.pipTimers, 0, '거두지 않으면 닫힌 창의 인터벌이 남는다');
-  assert.equal(app.document.getElementById('pomo-pip').getAttribute('aria-label'),
-    '타이머를 창으로 빼기');
   assert.equal(app.document.getElementById('pomo-mini').hidden, false,
     '창이 닫혔으니 미니 타이머가 다시 그 자리를 맡는다');
+
+  // 창으로 빼기 버튼은 패널 안에 있다. 접혀 있는 동안에는 손대지 않고(아무도 못 본다),
+  // 펴는 순간 제 글자를 되찾는다.
+  t.togglePomo(true);
+  assert.equal(app.document.getElementById('pomo-pip').getAttribute('aria-label'),
+    '타이머를 창으로 빼기');
 });
 
 test('창을 열지 못하면 알리고, 두 번 눌러도 두 번 열지 않는다', async () => {
@@ -2150,6 +2183,37 @@ test('지원하지 않는 브라우저에서는 창으로 빼기에 손잡이조
   const supported = loadApp();
   assert.equal(supported.document.getElementById('pomo-pip').listeners.has('click'), true);
   assert.equal(supported.document.getElementById('pomo-pip').hidden, false);
+});
+
+test('접혀 있는 자리에는 쓰지 않고, 펴는 순간 따라잡는다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const id = (n) => app.document.getElementById(n);
+
+  t.togglePomo(true);
+  t.pomoSet(60);                       // 패널은 펴고 시계는 접은 기본 상태
+
+  assert.equal(id('pomo-time').textContent, '01:00', '보이는 시계는 따라온다');
+  assert.notEqual(id('pomo-dial-time').textContent, '01:00',
+    '접힌 시계에는 쓰지 않는다 — 아무도 못 보는 자리다');
+
+  // 펴면 그 자리에서 채워진다. 접힌 동안 밀린 것이 남지 않는다.
+  t.togglePomoView(id('pomo-dial'), id('pomo-expand'), true);
+  t.renderPomo();
+  assert.equal(id('pomo-dial-time').textContent, '01:00', '펴는 순간 따라잡는다');
+
+  // 패널을 접으면 그 안 전체를 건너뛴다. 미니 타이머만 따라온다.
+  t.togglePomo(false);
+  t.cycleEnter(1, 'rest', true);       // 한 판을 걸어 미니가 뜨게 한다
+  assert.equal(id('pomo-mini').hidden, false);
+  assert.equal(id('pomo-mini-time').textContent, '05:00', '보이는 미니 타이머는 따라온다');
+  assert.equal(id('pomo-time').textContent, '01:00', '접힌 패널 안은 그대로 둔다');
+  assert.equal(id('pomo-dial-time').textContent, '01:00');
+
+  // 다시 펴면 한 번에 따라잡는다
+  t.togglePomo(true);
+  assert.equal(id('pomo-time').textContent, '05:00');
+  assert.equal(id('pomo-dial-time').textContent, '05:00');
 });
 
 // ── 미니 타이머 불투명도 ────────────────────────────────
