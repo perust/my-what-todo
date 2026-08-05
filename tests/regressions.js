@@ -396,37 +396,46 @@ test('화면 설정은 가져오기와 로드에서 같은 자리에서 정규�
   // 숫자로 읽히는 값은 받아들인다 — 회차 시간(clampMinutes)과 같은 관례다.
   // 보기 방식은 참/거짓뿐이라 그런 여지를 두지 않는다. 억지로 읽을 값이 없다.
   const lenient = loadStore({ context: true });
-  assert.ok(lenient.Store.importData(baseData({ miniOpacity: '50', pipDial: 'false' })));
-  assert.equal(lenient.Store.getMiniOpacity(), 50);
+  assert.ok(lenient.Store.importData(baseData({ miniOpacity: '70', pipDial: 'false' })));
+  assert.equal(lenient.Store.getMiniOpacity(), 70);
   assert.equal(lenient.Store.getPipDial(), true, "'false'는 참도 거짓도 아니다");
+
+  // **하한 아래는 받지 않는다.** 그보다 옅으면 할 일 카드 위에 겹쳤을 때 글자가
+  // 읽히지 않는다 — 읽히는 선 밖의 값을 저장할 수 있게 두면 안 된다.
+  const floor = loadStore({ context: true });
+  const min = floor.Store.MINI_OPACITY_MIN;
+  assert.ok(floor.Store.importData(baseData({ miniOpacity: min - 1 })));
+  assert.equal(floor.Store.getMiniOpacity(), floor.Store.MINI_OPACITY_DEFAULT);
+  assert.ok(floor.Store.importData(baseData({ miniOpacity: min })));
+  assert.equal(floor.Store.getMiniOpacity(), min, '하한 자체는 받아야 한다');
 
   // 멀쩡한 값은 그대로 살아남고, 저장·재로드를 건너도 같다
   const { Store, localStorage } = loadStore({ context: true });
-  assert.ok(Store.importData(baseData({ miniOpacity: 37, pipDial: false })));
-  assert.equal(Store.getMiniOpacity(), 37);
+  assert.ok(Store.importData(baseData({ miniOpacity: 67, pipDial: false })));
+  assert.equal(Store.getMiniOpacity(), 67);
   assert.equal(Store.getPipDial(), false);
 
   const reopened = loadStore({ context: true });
   reopened.localStorage.setItem('daily-todo:v1', localStorage.getItem('daily-todo:v1'));
   reopened.Store.load();
-  assert.equal(reopened.Store.getMiniOpacity(), 37, '다시 열어도 지켜진다');
+  assert.equal(reopened.Store.getMiniOpacity(), 67, '다시 열어도 지켜진다');
   assert.equal(reopened.Store.getPipDial(), false);
 
   // 소수점은 반올림해 들인다. 손잡이가 정수만 내지만 파일은 아무 값이나 담을 수 있다.
   const rounded = loadStore({ context: true });
-  assert.ok(rounded.Store.importData(baseData({ miniOpacity: 36.6 })));
-  assert.equal(rounded.Store.getMiniOpacity(), 37);
+  assert.ok(rounded.Store.importData(baseData({ miniOpacity: 66.6 })));
+  assert.equal(rounded.Store.getMiniOpacity(), 67);
 });
 
 test('화면 설정도 저장 실패에는 통째로 되돌아간다', () => {
   const { Store, localStorage } = loadStore({ context: true });
-  assert.ok(Store.importData(baseData({ miniOpacity: 40, pipDial: true })));
+  assert.ok(Store.importData(baseData({ miniOpacity: 70, pipDial: true })));
 
   // 다음 쓰기를 막는다. 변경 API는 실패하면 값을 되돌리고 null을 준다 (PRD §8).
   localStorage.setItem = () => { throw new Error('quota'); };
 
-  assert.equal(Store.setMiniOpacity(10), null);
-  assert.equal(Store.getMiniOpacity(), 40, '되돌리지 않으면 화면과 저장본이 갈라진다');
+  assert.equal(Store.setMiniOpacity(90), null);
+  assert.equal(Store.getMiniOpacity(), 70, '되돌리지 않으면 화면과 저장본이 갈라진다');
   assert.equal(Store.setPipDial(false), null);
   assert.equal(Store.getPipDial(), true);
 });
@@ -485,6 +494,85 @@ test('카테고리 상한은 만들 때도 로드·가져오기에서도 같은 
   })));
   assert.equal(dup.Store.getCategories().length, 1, '가져오기에서 이름 중복이 남았다');
   assert.equal(dup.Store.addCategory('같은 이름'), null);
+});
+
+test('세 검증 관문이 같은 기준으로 자른다', () => {
+  // `adopt`가 통과시킨 값을 Markdown 정본 검증이 거부하면, 앱이 **자기 저장본 때문에**
+  // 사용자의 Markdown 파일을 탓하고 충돌 가져오기가 통째로 죽는다.
+  const cases = [
+    ['자른 자리가 공백인 카테고리 이름', { categories: [{ id: 'work', name: 'a'.repeat(11) + ' b', hue: 220 }],
+      todos: [todo('t1')] }],
+    ['자른 자리가 공백인 제목', { todos: [todo('t1', { title: 'x'.repeat(99) + ' ' + 'y'.repeat(30) })] }],
+    ['앞뒤가 공백인 제목', { todos: [todo('t1', { title: '   가운데   ' })] }]
+  ];
+
+  for (const [label, over] of cases) {
+    const { Store } = loadStore({ context: true });
+    assert.ok(Store.importData(baseData(over)), label);
+
+    const snap = plain(Store.exportData());
+    for (const cat of snap.categories) {
+      assert.equal(cat.name, cat.name.trim(), `${label}: 카테고리 이름에 공백이 남았다`);
+    }
+    for (const item of snap.todos) {
+      assert.equal(item.title, item.title.trim(), `${label}: 제목에 공백이 남았다`);
+    }
+  }
+
+  // 주소로 옮길 수 없는 id는 들이지 않는다 — 들이면 Markdown 저장이 영영 실패하고
+  // 앱 안에서 되돌릴 길이 없다
+  const bad = loadStore({ context: true });
+  assert.ok(bad.Store.importData(baseData({ todos: [todo('a\uD800b'), todo('멀쩡한-id')] })));
+  const ids = plain(bad.Store.exportData()).todos.map((t) => t.id);
+  assert.deepEqual(ids, ['멀쩡한-id'], '옮길 수 없는 id가 들어왔다');
+});
+
+test('손상 데이터를 옮기지 못해도 이후 저장이 막히지 않는다', () => {
+  // 백업 쓰기가 실패하면 원본이 남는데, 그것을 우리가 본 원문으로 기억하지 않으면
+  // 비교할 것이 없어 **이후 모든 저장이 영영 conflict로 막힌다** —
+  // 화면에는 "다른 탭에서 먼저 바뀌었습니다"가 뜨는데 다른 탭은 없다.
+  const { Store, localStorage } = loadStore({ context: true });
+  const realSet = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = (k, v) => {
+    if (k.endsWith(':corrupted')) throw new Error('quota');
+    realSet(k, v);
+  };
+  localStorage.setItem('daily-todo:v1', '{망가진 json');
+  Store.load();
+
+  assert.equal(Store.wasCorrupted, true);
+  assert.equal(Store.wasQuarantined, false, '옮기지 못한 것을 옮겼다고 말한다');
+  assert.notEqual(Store.setTheme('dark'), null, '저장이 영구히 막혔다');
+  assert.equal(Store.lastError, null);
+  assert.notEqual(Store.setTheme('light'), null);
+
+  // 옮기는 데 성공하면 그렇게 말한다
+  const ok = loadStore({ context: true });
+  ok.localStorage.setItem('daily-todo:v1', '{망가진 json');
+  ok.Store.load();
+  assert.equal(ok.Store.wasQuarantined, true);
+  assert.equal(ok.localStorage.getItem('daily-todo:v1:corrupted'), '{망가진 json');
+});
+
+test('우리보다 새로운 형식의 저장본은 덮지 않는다', () => {
+  // Pages가 모든 파일에 max-age=600을 주므로 새 버전과 캐시에 남은 옛 버전이 한동안
+  // 함께 돈다. 그때 옛 탭이 한 번 저장하는 것만으로 새 필드가 날아가면 안 된다.
+  const { Store, localStorage } = loadStore({ context: true });
+  localStorage.setItem('daily-todo:v1', JSON.stringify({
+    ...baseData(), version: 99, rev: 3, 나중에생긴필드: '지켜져야 한다'
+  }));
+  Store.load();
+
+  assert.equal(Store.setTheme('dark'), null, '새 형식을 덮어썼다');
+  assert.equal(Store.lastError, 'newer');
+  const after = JSON.parse(localStorage.getItem('daily-todo:v1'));
+  assert.equal(after.version, 99);
+  assert.equal(after.나중에생긴필드, '지켜져야 한다');
+
+  // 같은 버전이면 평소대로 쓴다
+  const same = loadStore({ context: true });
+  assert.ok(same.Store.importData(baseData()));
+  assert.notEqual(same.Store.setTheme('dark'), null);
 });
 
 class ClassList {
@@ -2466,6 +2554,82 @@ test('상태가 통째로 갈리면 서 있는 구간도 새 길이로 다시 �
   assert.equal(t.pomoState().pomoLength, 50 * 60);
 });
 
+test('안쪽 화면을 Esc로 접으면 포커스가 여는 버튼으로 돌아온다', () => {
+  // 설정 안에는 포커스 받는 것이 열 개 넘게 있다. 그냥 접으면 포커스가 몸통으로
+  // 떨어져 이어지는 Tab이 문서 맨 위에서 다시 시작한다.
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const id = (n) => app.document.getElementById(n);
+
+  t.togglePomo(true);
+  t.togglePomoView(id('pomo-settings'), id('pomo-settings-button'), true);
+  // 설정 안의 칸에 포커스를 둔다
+  const field = app.document.createElement('input');
+  field.classList.add('pomo-set-input');
+  id('pomo-set-rows').appendChild(field);
+  id('pomo-settings').appendChild(id('pomo-set-rows'));
+  field.focus();
+
+  id('pomodoro').dispatch('keydown', { key: 'Escape' });
+  assert.equal(id('pomo-settings').hidden, true, '설정이 닫히지 않았다');
+  assert.equal(app.document.activeElement, id('pomo-settings-button'),
+    '포커스가 여는 버튼으로 돌아오지 않았다');
+
+  // 밖에 포커스가 있었다면 뺏지 않는다
+  t.togglePomoView(id('pomo-settings'), id('pomo-settings-button'), true);
+  const outside = id('add-input');
+  outside.focus();
+  id('pomodoro').dispatch('keydown', { key: 'Escape' });
+  assert.equal(app.document.activeElement, outside);
+});
+
+test('시작하자마자 멈춰도 걸린 판은 미니 타이머로 남는다', () => {
+  // 남은 초는 반올림이라 시작 0.5초 안에 멈추면 `pomoLeft === pomoLength`가 되어
+  // "건드린 적 없음"으로 읽힌다. 사이클이 멈춰 서 있는데 미니가 사라졌다.
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const id = (n) => app.document.getElementById(n);
+
+  t.togglePomo(true);
+  t.cycleEnter(1, 'rest', true);
+  t.pomoAct();                       // 흐른 시간 없이 곧바로 멈춘다
+
+  const state = t.pomoState();
+  assert.equal(state.pomoLeft, state.pomoLength, '이 검사의 전제가 깨졌다');
+  assert.equal(state.pomoEndsAt, null);
+
+  t.togglePomo(false);
+  assert.equal(id('pomo-mini').hidden, false, '멈춰 선 판인데 미니가 사라졌다');
+
+  // 초기화하면 걸린 판이 없어지므로 미니도 접힌다
+  t.togglePomo(true);
+  t.cycleEnter(0, 'focus', false);
+  t.togglePomo(false);
+  assert.equal(id('pomo-mini').hidden, true);
+});
+
+test('돌아갈 시간이 남은 채로 기다리는 기록은 대기를 버린다', () => {
+  // 우리가 남기는 짝은 아니지만 세션 저장소는 사용자가 고칠 수 있는 자리다.
+  // 그대로 두면 05:00이 떠 있는데 `계속`은 감춰지고 `휴식 시작`만 남아,
+  // 그 5분을 이어갈 길이 화면에 없다.
+  const app = loadApp({
+    run: { endsAt: null, left: 300, length: 1500, round: 0, phase: 'focus', next: { round: 0, phase: 'rest' } }
+  });
+  const t = app.sandbox.__appTest;
+  t.restorePomoRun();
+
+  assert.equal(t.pomoState().pendingNext, null, '이어갈 길이 없는 화면이 섰다');
+  assert.equal(app.document.getElementById('pomo-next').hidden, true);
+  assert.equal(app.document.getElementById('pomo-toggle').hidden, false);
+
+  // 남은 시간이 0이면 그 짝은 말이 되므로 그대로 둔다
+  const valid = loadApp({
+    run: { endsAt: null, left: 0, length: 1500, round: 0, phase: 'focus', next: { round: 0, phase: 'rest' } }
+  });
+  valid.sandbox.__appTest.restorePomoRun();
+  assert.notEqual(valid.sandbox.__appTest.pomoState().pendingNext, null);
+});
+
 // ── 미니 타이머 불투명도 ────────────────────────────────
 
 test('불투명도는 끄는 동안 화면만 따라오고 손을 뗄 때 한 번 저장한다', () => {
@@ -2501,8 +2665,14 @@ test('불투명도 손잡이는 저장된 값을 그대로 되돌려준다', () 
   const tag = /<input\b[^>]*\bid="pomo-veil"[^>]*>/.exec(html);
   assert.ok(tag, '불투명도 손잡이를 찾지 못했다');
   assert.match(tag[0], /\bstep="1"/);
-  assert.match(tag[0], /\bmin="0"/);
   assert.match(tag[0], /\bmax="100"/);
+
+  // 손잡이의 하한은 store가 정하는 값과 같아야 한다. 갈라지면 손잡이로 고른 값이
+  // 저장될 때 기본값으로 튕겨 나간다.
+  const { Store } = loadStore({ context: true });
+  const min = /\bmin="(\d+)"/.exec(tag[0]);
+  assert.ok(min, '손잡이에 min이 없다');
+  assert.equal(Number(min[1]), Store.MINI_OPACITY_MIN);
 });
 
 test('불투명도 저장이 실패하면 화면을 저장본 값으로 되맞춘다', () => {

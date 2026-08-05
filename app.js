@@ -225,6 +225,9 @@
     if (Store.lastError === 'conflict') {
       adoptExternal();
       showNotice('다른 탭에서 먼저 바뀌었습니다. 최신 내용을 불러왔으니 다시 해주세요.');
+    } else if (Store.lastError === 'newer') {
+      // 저장본이 이 화면보다 새 형식이다. 덮어쓰면 우리가 모르는 값이 사라진다.
+      showNotice('저장된 데이터가 이 화면보다 새 형식입니다. 페이지를 새로고침한 뒤 다시 해주세요.');
     } else {
       showNotice('저장하지 못했습니다. 마지막 변경을 되돌렸습니다.');
     }
@@ -351,6 +354,27 @@
     node.style.setProperty('--cat-hue', String(category.hue));
   }
 
+  /**
+   * 다시 그린 뒤 고른 것이 통 밖에 있으면 보이는 자리로 끌어온다.
+   *
+   * 세 통(`탭`·`카테고리 목록`·`태그 바`)은 높이 상한과 함께 스크롤을 얻었는데,
+   * 매 렌더마다 통째로 다시 세워지므로 스크롤 위치가 0으로 돌아간다. 아래 줄의
+   * 탭을 골라 필터를 켜면 **방금 고른 그것이 화면에서 사라진다.**
+   *
+   * `scrollIntoView`를 쓰지 않는 이유는 그것이 페이지 전체를 함께 굴리기 때문이다.
+   * 통 안에서만 굴린다.
+   */
+  function revealActive(box, selector) {
+    const active = box.querySelector(selector);
+    if (!active || box.scrollHeight <= box.clientHeight) return;
+
+    const top = active.offsetTop - box.offsetTop;
+    if (top < box.scrollTop) box.scrollTop = top;
+    else if (top + active.offsetHeight > box.scrollTop + box.clientHeight) {
+      box.scrollTop = top + active.offsetHeight - box.clientHeight;
+    }
+  }
+
   function renderTabs() {
     tabs.textContent = '';
 
@@ -377,6 +401,7 @@
       }
       tabs.appendChild(tab);
     }
+    revealActive(tabs, '.tab.is-active');
   }
 
   /** 직전에 고른 값은 그대로 두되, 그 카테고리가 사라졌으면 첫 번째로 내려온다. */
@@ -418,6 +443,7 @@
       chip.append(name, count);
       tagBar.appendChild(chip);
     }
+    revealActive(tagBar, '.tag-chip.is-active, [data-action="filter-tag"].is-active');
   }
 
   // ────────────────────────────────────────────────────────────
@@ -560,10 +586,17 @@
     cycleRound = run.round;
     cyclePhase = run.phase;
     pendingNext = run.next;
+    // 남겨둔 기록이 있다는 것 자체가 한 판을 걸었다는 뜻이다
+    pomoTouched = true;
 
     if (run.endsAt === null) {
       // 멈춰 있었다. 남은 시간 그대로 세워둔다.
-      // 다만 **기다리던 것이 있으면 펴서 보여준다** — 눌러야 이어지는 버튼이
+      // **기다리는 중이라면 남은 시간이 0이어야 한다** — 우리가 남기는 짝은 아니지만
+      // 세션 저장소는 사용자가 고칠 수 있는 자리다. 그대로 두면 05:00이 떠 있는데
+      // `계속`은 감춰지고 `휴식 시작`만 남아, 그 5분을 이어갈 길이 화면에 없다.
+      if (pendingNext !== null && pomoLeft !== 0) pendingNext = null;
+
+      // 기다리던 것이 있으면 펴서 보여준다 — 눌러야 이어지는 버튼이
       // 접힌 패널 안에 있으면 사이클이 여기서 끝난 것과 다를 바가 없다.
       if (pendingNext !== null) togglePomo(true);
       return;
@@ -633,6 +666,8 @@
   function pomoStart() {
     if (pomoEndsAt !== null || pomoLeft === 0) return;
 
+    pomoTouched = true;
+
     pomoEndsAt = Date.now() + pomoLeft * 1000;
     pomoTick = setInterval(pomoRefresh, 250);
     renderPomo();
@@ -656,6 +691,7 @@
   function pomoSet(seconds) {
     pomoStop();
     pendingNext = null;
+    pomoTouched = false; // 새로 세우는 것이므로 걸린 판은 없다. pomoStart가 다시 켠다
     cycleRound = null;
     pomoLength = seconds;
     pomoLeft = seconds;
@@ -666,6 +702,7 @@
   function cycleEnter(round, phase, run) {
     pomoStop();
     pendingNext = null;
+    pomoTouched = false; // 새로 세우는 것이므로 걸린 판은 없다. pomoStart가 다시 켠다
     cycleRound = round;
     cyclePhase = phase;
     pomoLength = phaseMinutes(round, phase) * 60;
@@ -920,10 +957,15 @@
 
   /**
    * 한 판이 걸려 있는가. 시작한 적이 없거나 초기화한 직후에는 아니다.
-   * `pomoLeft !== pomoLength`가 일시정지와 끝난 자리를 함께 잡는다.
+   *
+   * 흐른 시간으로만 재면 안 된다 — 남은 초는 반올림이라 시작 0.5초 안에 멈추면
+   * `pomoLeft === pomoLength`가 되어 "건드린 적 없음"으로 읽히고, 사이클이 멈춰
+   * 서 있는데 미니 타이머가 사라진다. **한 번이라도 돌린 판인지를 따로 기억한다.**
    */
+  let pomoTouched = false;
+
   const pomoActive = () =>
-    pomoEndsAt !== null || pendingNext !== null || pomoLeft !== pomoLength;
+    pomoEndsAt !== null || pendingNext !== null || pomoTouched || pomoLeft !== pomoLength;
 
   function renderMini(clock, label) {
     // 별도 창으로 빼놓았으면 이쪽은 접는다. 같은 시계를 두 군데 띄울 이유가 없다.
@@ -1115,6 +1157,9 @@
     }
 
     win.document.documentElement.lang = 'ko';
+    // 별도 문서라 제목도 따로 필요하다. 없으면 스크린리더가 이 창으로 옮겨갔을 때
+    // 부를 이름이 없다 (WCAG 2.4.2).
+    win.document.title = BASE_TITLE;
     syncPipTheme();
 
     pipPhase = el('span', 'pip-phase');
@@ -1522,8 +1567,12 @@
       notes.push('이 브라우저에서는 데이터가 저장되지 않습니다. 탭을 닫으면 목록이 사라집니다.');
     }
     if (Store.wasCorrupted) {
+      // 옮기지 못했으면 그렇게 말한다. 백업했다고 해놓고 그 키가 비어 있으면
+      // 사용자는 없는 것을 찾으러 간다.
       notes.push(
-        '저장된 데이터가 손상되어 빈 목록으로 시작합니다. 이전 데이터는 daily-todo:v1:corrupted 에 남겨두었습니다.'
+        Store.wasQuarantined
+          ? '저장된 데이터가 손상되어 빈 목록으로 시작합니다. 이전 데이터는 daily-todo:v1:corrupted 에 남겨두었습니다.'
+          : '저장된 데이터가 손상되어 빈 목록으로 시작합니다. 저장 공간이 모자라 이전 데이터를 따로 옮기지는 못했습니다. 지금부터의 변경을 저장하면 그 데이터를 덮어씁니다.'
       );
     }
 
@@ -2690,10 +2739,19 @@
   pomoPanel.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
 
-    // 안쪽 화면이 열려 있으면 그것부터 닫는다
-    if (!pomoSettings.hidden) togglePomoView(pomoSettings, pomoSettingsButton, false);
-    else if (!pomoDial.hidden) togglePomoView(pomoDial, pomoExpand, false);
-    else {
+    // 안쪽 화면이 열려 있으면 그것부터 닫는다.
+    // **닫는 자리마다 포커스를 여는 버튼으로 되돌린다** — 설정 안에는 포커스 받는 것이
+    // 열 개 넘게 있어서, 그냥 접으면 포커스가 몸통으로 떨어져 이어지는 Tab이
+    // 문서 맨 위에서 다시 시작한다. 패널 단계는 이미 그렇게 하고 있었다.
+    if (!pomoSettings.hidden) {
+      const inside = pomoSettings.contains(document.activeElement);
+      togglePomoView(pomoSettings, pomoSettingsButton, false);
+      if (inside) pomoSettingsButton.focus();
+    } else if (!pomoDial.hidden) {
+      const inside = pomoDial.contains(document.activeElement);
+      togglePomoView(pomoDial, pomoExpand, false);
+      if (inside) pomoExpand.focus();
+    } else {
       togglePomo(false);
       pomoButton.focus();
     }

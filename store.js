@@ -87,9 +87,18 @@
    */
   const MINI_OPACITY_DEFAULT = 82;
 
+  /**
+   * 아래로 막는 값. **0까지 내려가면 글자가 읽히지 않는다** — 미니 타이머는 평면
+   * 배경이 아니라 할 일 카드 위에도 얹히는데(뷰포트가 좁으면 늘 겹친다),
+   * 바탕이 사라지면 그 아래 글자가 그대로 비쳐 흐린 글자가 3.07:1까지 내려간다.
+   * 테두리도 함께 투명해져 경계가 1.00:1이 된다.
+   * 55%면 그 겹친 자리에서도 4.5:1을 지킨다.
+   */
+  const MINI_OPACITY_MIN = 55;
+
   const normalizeMiniOpacity = (value) => {
     const n = Math.round(Number(value));
-    return Number.isFinite(n) && n >= 0 && n <= 100 ? n : MINI_OPACITY_DEFAULT;
+    return Number.isFinite(n) && n >= MINI_OPACITY_MIN && n <= 100 ? n : MINI_OPACITY_DEFAULT;
   };
 
   /**
@@ -129,6 +138,8 @@
   /** 빼놓은 창을 원형 시계로 보는가. false면 숫자만 본다. */
   let pipDial = PIP_DIAL_DEFAULT;
   let corrupted = false;
+  /** 손상 데이터를 실제로 `:corrupted`로 옮겼는가. 실패했으면 그렇게 말해야 한다. */
+  let quarantined = false;
 
   /** 마지막으로 읽거나 쓴 저장본의 판 번호. 다른 탭이 쓰면 여기서 벌어진다. */
   let rev = 0;
@@ -139,10 +150,20 @@
    * 저장본을 날리거나, 전부 충돌로 보아 옛 저장본을 가진 사람이 영영 저장하지 못하거나.
    */
   let revlessRaw = null;
-  /** 직전 저장 실패의 종류. "conflict"(다른 탭이 먼저 씀) | "save"(용량 등) | null */
+  /** 직전 저장 실패의 종류. "conflict"(다른 탭이 먼저 씀) | "newer"(저장본이 우리보다 새로움) | "save"(용량 등) | null */
   let lastError = null;
 
   const hasCategory = (id) => categories.some((c) => c.id === id);
+
+  /** 주소로 옮겨 적을 수 있는 문자열인가. 짝 없는 서로게이트가 들어오면 못 옮긴다. */
+  const canEncode = (value) => {
+    try {
+      encodeURIComponent(value);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
 
   // ────────────────────────────────────────────────────────────
   // 저장소 — localStorage가 막히면 메모리로 폴백한다 (PRD §8)
@@ -207,10 +228,20 @@
   /**
    * 손상된 저장본을 옆으로 옮기고 빈 목록으로 시작한다.
    * 지우지 않는 이유는 사용자가 나중에 `:corrupted`에서 원본을 건져낼 수 있어야 하기 때문이다.
-   * 옮기기까지 실패하면 그냥 넘어간다 — 앱이 뜨는 것이 먼저다.
+   *
+   * **옮기지 못했을 때가 어렵다.** 백업 쓰기가 실패하면(손상 블롭이 클 때의 용량 초과)
+   * 원본이 저장소에 그대로 남는데, 그것은 우리가 읽어온 그 원문이므로 `revlessRaw`에
+   * 담아둬야 한다. 그러지 않으면 판 번호를 비교할 것도 원문을 견줄 것도 없어
+   * **이후 모든 저장이 영영 `conflict`로 막힌다** — 화면에는 "다른 탭에서 먼저
+   * 바뀌었습니다"가 뜨는데 다른 탭은 없고, 그동안 사용자의 편집이 조용히 버려진다.
+   * 실제로 그랬다.
+   *
+   * 옮겼는지는 밖에서 물어볼 수 있게 남긴다. 백업했다고 말해놓고 그 키가 비어 있으면
+   * 사용자는 없는 것을 찾으러 간다.
    */
   function quarantine(raw) {
     corrupted = true;
+    quarantined = false;
     try {
       if (backend) {
         backend.setItem(CORRUPTED_KEY, raw);
@@ -218,8 +249,12 @@
       } else {
         memoryBlob = null;
       }
+      quarantined = true;
     } catch (e) {
-      /* 옮기지 못해도 앱은 계속 뜬다 */
+      // 옮기지 못해도 앱은 계속 뜬다. 다만 남은 원문을 우리가 본 것으로 기억해,
+      // 다음 저장이 막히지 않게 한다.
+      revlessRaw = raw;
+      rev = 0;
     }
   }
 
@@ -230,7 +265,7 @@
    * `persist()`가 늘 같은 순서로 쓰므로 앞머리는 고정이고, 맨 앞에 앵커를 걸어 두 값만 꺼낸다.
    * 앵커가 없으면 할 일 제목 안에 든 `"rev":`에 잘못 걸린다.
    */
-  const HEAD = /^\{"version":\d+,"rev":(\d+),"theme":(null|"light"|"dark"),/;
+  const HEAD = /^\{"version":(\d+),"rev":(\d+),"theme":(null|"light"|"dark"),/;
 
   /**
    * 저장본에서 판 번호와 테마만 꺼낸다. 앞머리로 먼저 읽고, 모양이 조금이라도 다르면
@@ -240,17 +275,22 @@
   function readHead(raw) {
     const head = HEAD.exec(raw);
     if (head) {
-      return { rev: Number(head[1]), theme: head[2] === 'null' ? null : head[2].slice(1, -1) };
+      return {
+        version: Number(head[1]),
+        rev: Number(head[2]),
+        theme: head[3] === 'null' ? null : head[3].slice(1, -1)
+      };
     }
 
     try {
       const parsed = JSON.parse(raw);
       return {
+        version: Number.isFinite(parsed?.version) ? parsed.version : null,
         rev: Number.isFinite(parsed?.rev) ? parsed.rev : null,
         theme: validTheme(parsed?.theme)
       };
     } catch (e) {
-      return { rev: null, theme: null };
+      return { version: null, rev: null, theme: null };
     }
   }
 
@@ -452,7 +492,10 @@
       if (out.length >= MAX_CATEGORIES) break;
       if (!raw || typeof raw !== 'object') continue;
       if (typeof raw.id !== 'string' || !raw.id || seenIds.has(raw.id)) continue;
-      const name = normalizeCategoryName(raw.name).slice(0, MAX_CATEGORY_NAME);
+      // **자른 뒤에 한 번 더 다듬는다.** 다듬고 자르면 잘린 자리가 공백일 때 뒤 공백이
+      // 남는데, Markdown 정본 검증은 그 값을 곧바로 거부한다 — 그러면 앱이 자기 저장본
+      // 때문에 사용자의 Markdown 파일을 탓하고, 충돌 가져오기가 통째로 죽는다.
+      const name = normalizeCategoryName(raw.name).slice(0, MAX_CATEGORY_NAME).trim();
       if (!name) continue;
 
       // 이름은 목록 안에서 유일해야 한다 (PRD §5). 색은 자동으로 배정되므로 이름까지 같으면
@@ -482,13 +525,17 @@
     for (const raw of list) {
       if (!raw || typeof raw !== 'object') continue;
       if (typeof raw.id !== 'string' || !raw.id || seenIds.has(raw.id)) continue;
+      // Markdown 정본은 id를 주소로 옮겨 적는다. 옮길 수 없는 id(짝 없는 서로게이트 등)를
+      // 들이면 가져오기는 통과하는데 그 뒤로 Markdown 저장이 **영영** 실패하고,
+      // 앱 안에서 되돌릴 길이 없다. 다른 두 관문이 거부하는 것을 여기서도 거부한다.
+      if (!canEncode(raw.id)) continue;
       if (typeof raw.title !== 'string' || !raw.title.trim()) continue;
 
       seenIds.add(raw.id);
       out.push({
         id: raw.id,
         parentId: typeof raw.parentId === 'string' && raw.parentId ? raw.parentId : null,
-        title: raw.title.trim().slice(0, MAX_TITLE),
+        title: raw.title.trim().slice(0, MAX_TITLE).trim(), // 자른 자리가 공백이면 그것도 턴다 (위 참조)
         // 카테고리는 이제 지워질 수 있다. 모르는 값이면 버리지 말고 첫 번째로 옮긴다.
         category: hasCategory(raw.category) ? raw.category : categories[0].id,
         priority: raw.priority, // 2단계에서 교정
@@ -631,6 +678,15 @@
       // 남이 써둔 저장본을 그대로 덮는다. 우리가 load()에서 읽어온 그 원문일 때만 지나가고,
       // 아니면 물러나 load()를 다시 타게 한다 — 손상된 저장본은 그 길에 :corrupted로 옮겨지고,
       // 판 번호가 없는 옛 저장본은 다시 읽혀 그 다음 시도에서 통과한다.
+      // **우리보다 새로운 저장본은 덮지 않는다.** 우리가 모르는 필드가 들어 있을 수 있고,
+      // 우리 모양으로 다시 쓰면 그것이 말없이 사라진다. GitHub Pages가 모든 파일에
+      // `max-age=600`을 주므로 새 버전과 캐시에 남은 옛 버전이 한동안 함께 도는데,
+      // 그때 옛 탭이 한 번 저장하는 것만으로 새 필드가 날아간다.
+      if (Number.isFinite(stored.version) && stored.version > SCHEMA_VERSION) {
+        lastError = 'newer';
+        return false;
+      }
+
       const mine = stored.rev === null ? raw === revlessRaw : stored.rev === rev;
       if (!mine) {
         lastError = 'conflict';
@@ -854,6 +910,11 @@
       return corrupted;
     },
 
+    /** 그 손상 데이터를 `:corrupted`로 옮기는 데 성공했는가. 실패했으면 안내가 달라진다. */
+    get wasQuarantined() {
+      return quarantined;
+    },
+
     /**
      * 직전 변경이 왜 실패했는가. 변경 API가 null을 줬을 때만 의미가 있다.
      * "conflict"면 다른 탭이 먼저 썼다는 뜻이라, 최신 내용을 다시 읽어야 한다.
@@ -914,6 +975,7 @@
     },
 
     MINI_OPACITY_DEFAULT,
+    MINI_OPACITY_MIN,
 
     /** 미니 타이머 바탕의 진하기(%). 0이면 바탕 없이 글자만 뜬다. */
     getMiniOpacity() {
@@ -1062,6 +1124,7 @@
 
     load() {
       corrupted = false;
+      quarantined = false;
       lastError = null;
       rev = 0;
       revlessRaw = null;

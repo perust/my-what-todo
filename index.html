@@ -180,9 +180,11 @@
           <div class="pomo-set-veil">
             <label class="pomo-set-veil-label" for="pomo-veil">미니 타이머 불투명도</label>
             <!-- step은 1이어야 한다. 5로 두면 저장된 82가 손잡이에서 80으로 스냅되어
-                 숫자와 손잡이가 어긋나고, 가져온 파일의 값도 그대로 돌아오지 못한다. -->
+                 숫자와 손잡이가 어긋나고, 가져온 파일의 값도 그대로 돌아오지 못한다.
+                 아래로 55까지만 간다 — 그보다 옅으면 할 일 카드 위에 겹쳤을 때
+                 글자가 읽히지 않는다 (store.js의 MINI_OPACITY_MIN과 같은 값이다). -->
             <input id="pomo-veil" class="pomo-veil" type="range"
-                   min="0" max="100" step="1" value="82">
+                   min="55" max="100" step="1" value="82">
             <output id="pomo-veil-value" class="pomo-veil-value" for="pomo-veil"></output>
           </div>
 

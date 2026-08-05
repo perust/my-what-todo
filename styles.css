@@ -288,6 +288,17 @@ body {
   outline-offset: -2px;
 }
 
+/* **높이 상한을 둔 통 안에서는 포커스 테두리도 안쪽에 붙인다.**
+   `overflow`가 `visible`이 아니면 패딩 상자에서 잘리는데, 기본 테두리는 바깥 2~4px에
+   그려진다. 첫 탭은 (0,0)에서 시작하므로 `Alt+1`로 옮겨가면 위·왼쪽 변이 통째로
+   잘려 나가고, 아래 줄의 탭은 스크롤되면서 잘리는 변만 바뀐다.
+   `.help-body`에서 이미 같은 문제를 이렇게 풀었다. */
+.tabs :focus-visible,
+.cat-list :focus-visible,
+.tag-bar :focus-visible {
+  outline-offset: -2px;
+}
+
 .help-section + .help-section {
   margin-top: 18px;
 }
