@@ -19,11 +19,12 @@ function load() {
 
 function snapshot(overrides = {}) {
   return {
-    version: 5,
+    version: 6,
     theme: null,
     sort: 'manual',
     pomodoro: [],
     miniOpacity: 82,
+    pipDial: true,
     categories: [
       { id: 'work', name: '업무', hue: 220 },
       { id: 'personal', name: '개인', hue: 140 }

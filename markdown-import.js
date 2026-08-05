@@ -15,7 +15,7 @@ format_version: 1
 > My What Todo 앱에서 자동 생성한 보기입니다. 지원되는 기존 할 일 편집은 앱의 Markdown 충돌 해결에서 가져올 수 있습니다.
 
 `;
-  const ROOT_KEYS = ['version', 'theme', 'sort', 'pomodoro', 'miniOpacity', 'categories', 'todos'];
+  const ROOT_KEYS = ['version', 'theme', 'sort', 'pomodoro', 'miniOpacity', 'pipDial', 'categories', 'todos'];
   const CATEGORY_KEYS = ['id', 'name', 'hue'];
   const TODO_KEYS = [
     'id', 'parentId', 'title', 'category', 'priority', 'tags',
@@ -190,7 +190,7 @@ format_version: 1
   function validateCurrent(current) {
     assertPlainGraph(current);
     exactKeys(current, ROOT_KEYS);
-    if (own(current, 'version') !== 5) deny('INVALID_CURRENT');
+    if (own(current, 'version') !== 6) deny('INVALID_CURRENT');
     const theme = own(current, 'theme');
     if (theme !== null && theme !== 'light' && theme !== 'dark') deny('INVALID_CURRENT');
     if (!SORTS.has(own(current, 'sort'))) deny('INVALID_CURRENT');
@@ -210,6 +210,7 @@ format_version: 1
     // 지나가면 다른 문으로 들어온 셈이 된다.
     const opacity = own(current, 'miniOpacity');
     if (!Number.isInteger(opacity) || opacity < 0 || opacity > 100) deny('INVALID_CURRENT');
+    if (typeof own(current, 'pipDial') !== 'boolean') deny('INVALID_CURRENT');
 
     const categories = own(current, 'categories');
     if (!Array.isArray(categories) || categories.length < 1 || categories.length > 64) deny('INVALID_CURRENT');

@@ -9,8 +9,11 @@
 
   const STORAGE_KEY = 'daily-todo:v1';
   const CORRUPTED_KEY = 'daily-todo:v1:corrupted';
-  /** 5에서 미니 타이머 불투명도(miniOpacity)가 늘었다. 키는 그대로 두고 이 숫자만 올린다. */
-  const SCHEMA_VERSION = 5;
+  /**
+   * 5에서 미니 타이머 불투명도(miniOpacity), 6에서 빼놓은 창의 보기 방식(pipDial)이 늘었다.
+   * 키는 그대로 두고 이 숫자만 올린다.
+   */
+  const SCHEMA_VERSION = 6;
   const MAX_TITLE = 100;
   const MAX_CATEGORY_NAME = 12;
 
@@ -89,6 +92,14 @@
     return Number.isFinite(n) && n >= 0 && n <= 100 ? n : MINI_OPACITY_DEFAULT;
   };
 
+  /**
+   * 빼놓은 창을 원형 시계로 볼 것인가, 숫자만으로 볼 것인가 (F-22d).
+   * 창 높이로 정하지 않고 사용자가 고른다 — 작은 창에서도 원을 보고 싶을 수 있다.
+   */
+  const PIP_DIAL_DEFAULT = true;
+  const normalizePipDial = (value) =>
+    typeof value === 'boolean' ? value : PIP_DIAL_DEFAULT;
+
   /** 처음 열었을 때 주어지는 세 가지. 이후로는 사용자가 늘리고 줄인다. */
   const DEFAULT_CATEGORIES = [
     { id: 'work', name: '업무', hue: 221 },
@@ -115,6 +126,8 @@
   let pomodoro = defaultPomodoro();
   /** 미니 타이머 바탕의 진하기(%). 테마와 같은 성격의 화면 설정이라 여기 함께 담는다. */
   let miniOpacity = MINI_OPACITY_DEFAULT;
+  /** 빼놓은 창을 원형 시계로 보는가. false면 숫자만 본다. */
+  let pipDial = PIP_DIAL_DEFAULT;
   let corrupted = false;
 
   /** 마지막으로 읽거나 쓴 저장본의 판 번호. 다른 탭이 쓰면 여기서 벌어진다. */
@@ -403,6 +416,7 @@
     sort = SORTS.includes(parsed?.sort) ? parsed.sort : 'priority';
     pomodoro = normalizePomodoro(parsed?.pomodoro);
     miniOpacity = normalizeMiniOpacity(parsed?.miniOpacity);
+    pipDial = normalizePipDial(parsed?.pipDial);
 
     // 카테고리를 먼저 세운다. 항목 검증이 이 목록을 기준으로 돌아간다.
     categories = normalizeCategories(parsed?.categories);
@@ -634,6 +648,7 @@
           sort,
           pomodoro,
           miniOpacity,
+          pipDial,
           categories,
           todos
         })
@@ -673,6 +688,7 @@
     const sortSnapshot = sort;
     const pomoSnapshot = pomodoro.map((r) => ({ ...r }));
     const miniSnapshot = miniOpacity;
+    const pipSnapshot = pipDial;
     const originals = new Map(todos.map((t) => [t.id, t]));
     let result;
 
@@ -683,6 +699,7 @@
       sort = sortSnapshot;
       pomodoro = pomoSnapshot;
       miniOpacity = miniSnapshot;
+      pipDial = pipSnapshot;
     };
 
     try {
@@ -915,6 +932,19 @@
       });
     },
 
+    /** 빼놓은 창을 원형 시계로 보는가 (F-22d). */
+    getPipDial() {
+      return pipDial;
+    },
+
+    setPipDial(value) {
+      const next = normalizePipDial(value);
+      return commit(() => {
+        pipDial = next;
+        return next;
+      });
+    },
+
     setSort(next) {
       if (!SORTS.includes(next)) return null;
       return commit(() => {
@@ -958,6 +988,7 @@
         sort,
         pomodoro: pomodoro.map((round) => ({ ...round })),
         miniOpacity,
+        pipDial,
         categories: categories.map((c) => ({ ...c })),
         todos: todos.map(clone)
       };
@@ -981,7 +1012,8 @@
         theme,
         sort,
         pomodoro: pomodoro.map((r) => ({ ...r })),
-        miniOpacity
+        miniOpacity,
+        pipDial
       };
       adopt(raw);
 
@@ -998,6 +1030,7 @@
         sort = snapshot.sort;
         pomodoro = snapshot.pomodoro;
         miniOpacity = snapshot.miniOpacity;
+        pipDial = snapshot.pipDial;
         invalidate();
       }
       return result;
@@ -1039,6 +1072,7 @@
       sort = 'priority';
       pomodoro = defaultPomodoro();
       miniOpacity = MINI_OPACITY_DEFAULT;
+      pipDial = PIP_DIAL_DEFAULT;
 
       const raw = readRaw();
       if (!raw) return todos;

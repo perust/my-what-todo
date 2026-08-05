@@ -908,31 +908,23 @@
   const pipSupported = 'documentPictureInPicture' in globalThis;
 
   /**
-   * 창 크기 두 가지. 항상 위에 뜨는 창이라 **가리는 넓이가 곧 비용**이다.
-   * 처음에는 작은 쪽으로 연다 — 큰 창이 필요하면 그때 키우면 되지만, 큰 창이
-   * 화면을 가리고 있으면 그것이 거슬리는 동안 내내 가린다.
+   * 처음 열 때 달라고 할 크기. 여기 적는 높이는 **바깥 크기**라 브라우저가 자기
+   * 머리띠(되돌아가기 단추가 있는 줄)를 그 안에서 빼간다 — 132를 달라고 했더니
+   * 안쪽이 76px로 왔다. 그래서 보이고 싶은 높이에 그만큼을 더해 적는다.
    *
-   * 작은 쪽은 눈금을 접고 숫자만 남긴다 (styles.css의 max-height 규칙).
-   * 큰 쪽에서는 시간이 흐른 만큼 채워지는 원이 함께 보인다.
-   * 브라우저가 이보다 작게는 못 만들 수도 있다 — 최소 크기는 브라우저가 정한다.
+   * **그 뒤로는 손대지 않는다.** 브라우저가 마지막 크기를 기억하므로, 우리가 다시
+   * 정해주면 사용자가 맞춰둔 크기를 되돌려버린다. 크기는 창 가장자리를 끄는 사람의 몫이다.
+   *
+   * 가로 최소치는 브라우저가 정하고 우리가 내릴 방법이 없다. 실제로 240보다 작게
+   * 달라고 해도 240이 온다. 그래서 세로만이라도 낮게 잡는다.
    */
-  /**
-   * 여기 적는 높이는 **바깥 크기**다. 브라우저가 자기 머리띠(되돌아가기 단추가 있는 줄)를
-   * 그 안에서 빼가므로 안쪽은 50px 남짓 좁다 — 132를 달라고 했더니 안쪽이 76px로 왔다.
-   * 그래서 보이고 싶은 높이에 그만큼을 더해 적는다. 정확한 값은 브라우저가 정하므로
-   * 이 숫자에 기대지 않는다. 어느 크기가 오든 화면이 견디는 것은 styles.css가 맡는다.
-   */
-  const PIP_SMALL = { width: 240, height: 190 };
-  const PIP_LARGE = { width: 260, height: 320 };
-
-  /** 지금 큰 쪽인가. 사용자가 창을 직접 끌어 바꿀 수도 있으므로 실제 높이로 판단한다. */
-  const pipIsLarge = () => pipWindow !== null && pipWindow.innerHeight >= 200;
+  const PIP_OPEN_SIZE = { width: 240, height: 210 };
 
   let pipWindow = null;
   let pipTime = null;
   let pipPhase = null;
   let pipAction = null;
-  let pipResize = null;
+  let pipMode = null;
   let pipFill = null;
   let pipTick = null;
   /** 창이 열리기를 기다리는 중인가. 이 사이에 한 번 더 누르면 두 번째가 거절당한다. */
@@ -975,28 +967,58 @@
   }
 
   /**
-   * 창 크기 버튼의 그림. 양쪽으로 벌어지는 화살표 하나로 두 상태를 다 쓴다 —
-   * 커진 상태에서는 CSS가 뒤집어 안으로 모으는 모양이 된다.
+   * 저 창의 아이콘들. **글자 대신 모양으로 알린다** — 창이 손바닥만 하고 항상 위에
+   * 떠 있어서, 버튼 한 줄이 차지하는 높이가 그대로 가리는 넓이가 된다.
+   *
+   * 다만 읽히는 이름은 글자로 남긴다 (`aria-label`·`title`). 모양만 남기면 화면을
+   * 못 보는 사람에게는 아무것도 남지 않고, 음성으로 조작하는 사람은 부를 말을 잃는다.
    */
-  function buildResizeIcon() {
+  const PIP_ICONS = {
+    // 시작·계속·다시 시작
+    play: 'M8 5.2v13.6L19 12z',
+    // 일시정지
+    pause: 'M9 5.5v13M15 5.5v13',
+    // 다음 구간으로. 이어가는 것과 멈춘 것을 다시 미는 것은 다른 일이라 모양을 가른다.
+    // 뒤의 막대도 **면적으로** 그린다 — 선으로 두면 채우는 모양 안에서 넓이가 0이라 사라진다.
+    next: 'M7 5.2v13.6L16 12zM17.6 5.2h2.2v13.6h-2.2z',
+    // 원형 시계로 보기
+    dial: 'M12 4.6a7.4 7.4 0 1 1 0 14.8 7.4 7.4 0 0 1 0-14.8ZM12 8.4V12l2.5 1.5',
+    // 숫자만 보기
+    text: 'M5 8.5h14M5 12h9M5 15.5h11'
+  };
+
+  function buildIcon(shape, size) {
     const NS = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('width', '13');
-    svg.setAttribute('height', '13');
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
     svg.setAttribute('aria-hidden', 'true');
     svg.setAttribute('focusable', 'false');
 
     const path = document.createElementNS(NS, 'path');
-    path.setAttribute('fill', 'none');
-    path.setAttribute('stroke', 'currentColor');
-    path.setAttribute('stroke-width', '2');
-    path.setAttribute('stroke-linecap', 'round');
-    path.setAttribute('stroke-linejoin', 'round');
-    path.setAttribute('d', 'M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7');
+    // 채우는 모양(▶)과 긋는 모양(‖)이 섞여 있다. 채움은 `fill` 하나로 끝나지만
+    // 획은 굵기와 끝 모양을 함께 줘야 같은 무게로 보인다.
+    const filled = shape === PIP_ICONS.play || shape === PIP_ICONS.next;
+    path.setAttribute('d', shape);
+    path.setAttribute('fill', filled ? 'currentColor' : 'none');
+    path.setAttribute('stroke', filled ? 'none' : 'currentColor');
+    if (!filled) {
+      path.setAttribute('stroke-width', '2');
+      path.setAttribute('stroke-linecap', 'round');
+      path.setAttribute('stroke-linejoin', 'round');
+    }
 
     svg.appendChild(path);
     return svg;
+  }
+
+  /** 아이콘 하나를 갈아 끼운다. 같은 모양이면 손대지 않는다 — 1초마다 지나는 자리다. */
+  function setIcon(button, shape, size) {
+    if (button.dataset.shape === shape) return;
+    button.dataset.shape = shape;
+    button.textContent = '';
+    button.appendChild(buildIcon(shape, size));
   }
 
   /**
@@ -1012,7 +1034,7 @@
     pipOpening = true;
     let win;
     try {
-      win = await documentPictureInPicture.requestWindow({ ...PIP_SMALL });
+      win = await documentPictureInPicture.requestWindow({ ...PIP_OPEN_SIZE });
     } catch (e) {
       showNotice('창을 열지 못했습니다. 잠시 뒤에 다시 눌러주세요.');
       return;
@@ -1040,44 +1062,32 @@
     pipTime.setAttribute('role', 'timer');
     pipTime.setAttribute('aria-live', 'off');
 
+    // 글자 대신 모양으로 알린다. 글자 버튼 한 줄이 차지하던 높이가 그대로
+    // 가리는 넓이였다. 읽히는 이름은 renderPip이 aria-label로 함께 갈아 끼운다.
     pipAction = el('button', 'pip-action');
     pipAction.type = 'button';
     pipAction.addEventListener('click', pomoAct);
 
-    // 창 크기를 창 안에서 바꾼다. `resizeTo`는 사용자 조작이 있어야 통하는데,
-    // **이 버튼을 누른 것이 그 조작이다** — 밖에서 부르면 거절당한다.
-    // 창 가장자리를 끄는 길도 있지만, 항상 위에 뜨는 창이 접히는 방법이 있다는 것을
-    // 알려주는 자리가 화면 어디에도 없다.
-    pipResize = el('button', 'pip-resize');
-    pipResize.type = 'button';
-    pipResize.append(buildResizeIcon());
-    pipResize.addEventListener('click', () => {
-      const next = pipIsLarge() ? PIP_SMALL : PIP_LARGE;
-      try {
-        pipWindow.resizeTo(next.width, next.height);
-      } catch (e) {
-        // 브라우저가 막을 수도 있는 길이다. 그때 버튼을 그대로 두면 눌러도 아무 일이
-        // 없는 버튼이 되고, 왜 안 되는지 알 길이 없다. 치우고 다른 길을 알린다.
-        pipResize.hidden = true;
-        showNotice('이 브라우저에서는 창 크기를 앱이 바꾸지 못합니다. 창 가장자리를 끌어 조절해 주세요.');
-        return;
-      }
-      renderPomo(); // 버튼이 이제 반대쪽을 가리킨다
+    // 보기 방식은 **창 크기가 아니라 사용자가 정한다.** 크기로 정하면 작은 창에서
+    // 원을 보고 싶을 때 길이 없다. 고른 것은 저장해 다음에 열 때도 그대로 나온다.
+    pipMode = el('button', 'pip-mode');
+    pipMode.type = 'button';
+    pipMode.addEventListener('click', () => {
+      if (saved(Store.setPipDial(!Store.getPipDial())) === null) return;
+      renderPomo(); // 클래스도 글자도 renderPip이 한 자리에서 갈아 끼운다
     });
 
-    // 숫자만으로는 얼마나 왔는지가 읽히지 않는다. 패널의 펼친 시계와 **같은 클래스**를
-    // 쓰므로 색도 1초 전환도 그대로 따라온다 — 크기만 저 창에 맞춰 줄인다.
+    // 누를 것을 **원 안에** 넣는다. 밖에 한 줄을 두면 그 줄만큼 창이 커져야 하고,
+    // 항상 위에 뜨는 창에서는 그 높이가 그대로 가리는 넓이가 된다.
+    // 패널의 펼친 시계와 같은 클래스라 색도 1초 전환도 그대로 따라온다.
     const label = el('div', 'pomo-dial-label');
-    label.append(pipTime, pipPhase);
+    label.append(pipTime, pipPhase, pipAction);
 
     const face = el('div', 'pomo-dial-face');
     face.append(buildDial(), label);
 
-    const bar = el('div', 'pip-bar');
-    bar.append(pipAction, pipResize);
-
     const box = el('div', 'pip-box');
-    box.append(face, bar);
+    box.append(face, pipMode);
     // 본 문서에서 만든 노드도 붙이는 순간 저 창의 것이 된다. 붙은 뒤에도
     // 이벤트 리스너는 그대로 살아 있어 여기서 건 click이 계속 우리에게 온다.
     win.document.body.className = 'pip';
@@ -1106,7 +1116,7 @@
     pipTime = null;
     pipPhase = null;
     pipAction = null;
-    pipResize = null;
+    pipMode = null;
     pipFill = null;
 
     renderPomo();
@@ -1125,16 +1135,28 @@
     const waiting = pendingNext !== null;
 
     setText(pipTime, clock);
-    setText(pipPhase, label || `${Math.round(pomoLength / 60)}분`);
-    setText(pipAction, waiting ? nextLabel() : runLabel());
     pipFill.style.strokeDashoffset = offset;
 
-    // 사용자가 창을 직접 끌어 바꿀 수도 있으므로 실제 높이에서 다시 읽는다.
-    // 여는 자리에서만 고치면 그때 글자가 반대로 남는다.
-    const large = pipIsLarge();
-    pipResize.classList.toggle('is-large', large);
-    setAttr(pipResize, 'aria-label', large ? '창 작게' : '창 크게');
-    setAttr(pipResize, 'title', large ? '창 작게' : '창 크게');
+    // 기다리는 중에는 **끝난 구간 대신 누를 것**을 적는다. 아이콘만으로는 `계속`과
+    // `휴식 시작`이 갈라지지 않는데, 이 자리는 이미 있으므로 높이가 늘지 않는다.
+    // 원이 가득 찬 것이 방금 것이 끝났다는 말을 대신한다.
+    setText(pipPhase, waiting ? nextLabel() : label || `${Math.round(pomoLength / 60)}분`);
+
+    // 모양은 셋으로 가른다 — 돌리기(▶), 멈추기(‖), 다음 구간으로(▶|).
+    // 멈춘 것을 다시 미는 것과 사이클을 잇는 것은 다른 일이라 같은 모양을 쓰지 않는다.
+    const actionName = waiting ? nextLabel() : runLabel();
+    setIcon(pipAction, waiting ? PIP_ICONS.next
+      : pomoEndsAt !== null ? PIP_ICONS.pause : PIP_ICONS.play, 22);
+    setAttr(pipAction, 'aria-label', actionName);
+    setAttr(pipAction, 'title', actionName);
+
+    // 보기 방식은 클래스 하나로 갈린다. 원을 접고 글자를 키우는 일은 CSS가 맡는다 —
+    // 다른 탭이 이 값을 바꿔도 여기를 지나므로 같은 길로 따라온다.
+    const dial = Store.getPipDial();
+    pipWindow.document.body.classList.toggle('is-text', !dial);
+    setIcon(pipMode, dial ? PIP_ICONS.text : PIP_ICONS.dial, 13);
+    setAttr(pipMode, 'aria-label', dial ? '숫자만 보기' : '원형 시계로 보기');
+    setAttr(pipMode, 'title', dial ? '숫자만 보기' : '원형 시계로 보기');
 
     const body = pipWindow.document.body;
     body.classList.toggle('is-running', pomoEndsAt !== null);
