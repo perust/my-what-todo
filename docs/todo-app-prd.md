@@ -1060,7 +1060,7 @@ daily-todo/
 └── app.js      # UI 계층: 렌더링 + 이벤트. store와 parse만 호출한다.
 ```
 
-일반 `<script>` 태그로 로드하되 순서는 `store.js` → `theme.js` → `parse.js` → `app.js`다. **앞의 둘만 `<head>`에 두고 나머지는 본문 끝에 둔다** — 고른 테마를 첫 페인트 전에 알아야 하기 때문이다 (F-14, §13). `theme.js`는 `Store.peekTheme()` 하나만 부른다.
+일반 `<script>` 태그로 로드하되 순서는 `store.js` → `theme.js`(여기까지 `<head>`) → `parse.js` → `file-sync.js` → `markdown-export.js` → `markdown-import.js` → `markdown-sync.js` → `app.js`(여기부터 본문 끝)다. 이 순서는 그냥 목록이 아니라 계약이다 — `markdown-sync.js`는 `MarkdownExport`와 `MarkdownImport`가 이미 서 있어야 돌고, 회귀 테스트가 그것을 검사한다. **앞의 둘만 `<head>`에 두고 나머지는 본문 끝에 둔다** — 고른 테마를 첫 페인트 전에 알아야 하기 때문이다 (F-14, §13). `theme.js`는 `Store.peekTheme()` 하나만 부른다.
 
 **인라인 `<script>`를 두지 않는다.** CSP의 `script-src 'self'`를 `'unsafe-inline'` 없이 걸려면 인라인 스크립트가 없어야 한다. 해시로 허용할 수도 있지만, 그 스크립트를 고칠 때마다 해시를 다시 계산해야 하고 잊으면 조용히 막혀 깜빡임이 되살아난다 (§13).
 

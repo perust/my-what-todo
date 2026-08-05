@@ -789,9 +789,20 @@ function loadApp(options = {}) {
     },
     getPomodoro() { return pomodoro.map((round) => ({ ...round })); },
     setPomodoro(value) {
-      pomodoro = value === null
-        ? [{ focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 25 }]
-        : value.map((round) => ({ ...round }));
+      if (value === null) {
+        pomodoro = [{ focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 25 }];
+        return true;
+      }
+      // 진짜 store처럼 **범위 밖 값은 직전 값을 지킨다** (clampMinutes). 여기서 그냥
+      // 받아버리면 "범위 밖은 되돌린다"는 규칙에 기대는 UI를 검사할 수가 없다.
+      pomodoro = pomodoro.map((round, i) => {
+        const raw = value[i] ?? round;
+        const keep = (v, fallback) => {
+          const n = Math.round(Number(v));
+          return Number.isFinite(n) && n >= 1 && n <= 180 ? n : fallback;
+        };
+        return { focus: keep(raw.focus, round.focus), rest: keep(raw.rest, round.rest) };
+      });
       return true;
     },
     getCategories() { return categories.map((item) => ({ ...item })); }, countInCategory() { return 0; },
@@ -2383,6 +2394,76 @@ test('늘 숨어 있는 자리에 1초마다 hidden을 다시 쓰지 않는다',
   // 정말 바뀌는 자리에서는 쓴다
   t.expirePomo();
   assert.ok(writes('pomo-next') > before.next, '기다리기 시작했는데 드러내지 않았다');
+});
+
+test('구간이 끝날 때 누를 자리가 화면에 하나도 없지는 않다', () => {
+  // 패널을 닫고 미니까지 거둬둔 사람에게 "휴식 시작을 누르면 이어집니다"는
+  // 없는 버튼을 가리키는 말이 된다. 거둔 뜻은 그 판에 걸린 것이었다.
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const id = (n) => app.document.getElementById(n);
+
+  t.togglePomo(true);
+  t.cycleEnter(0, 'focus', true);
+  t.togglePomo(false);
+  assert.equal(id('pomo-mini').hidden, false);
+  id('pomo-mini-close').click();
+  assert.equal(id('pomo-mini').hidden, true, '거둬진 상태를 못 만들었다');
+
+  t.expirePomo();
+
+  assert.match(id('toast').textContent, /휴식 시작/, '알림은 그 버튼을 가리킨다');
+  const 패널에보임 = !id('pomodoro').hidden && !id('pomo-next').hidden;
+  const 미니에보임 = !id('pomo-mini').hidden && !id('pomo-mini-next').hidden;
+  assert.ok(패널에보임 || 미니에보임, '누르라는 버튼이 화면 어디에도 없다');
+});
+
+test('범위 밖 값을 확정하면 포커스가 그 칸에 있어도 되맞춘다', () => {
+  // Enter는 값을 확정해 change를 내면서 포커스를 그 칸에 남긴다. 그때만
+  // 되맞춤이 그 칸을 건너뛰어, 화면은 999인데 도는 것은 25분인 채로 굳었다.
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const rows = app.document.getElementById('pomo-set-rows');
+
+  const field = app.document.createElement('input');
+  field.classList.add('pomo-set-input');
+  field.dataset.round = '0';
+  field.dataset.key = 'focus';
+  rows.appendChild(field);
+
+  field.value = '999';
+  field.focus();                       // Enter로 확정한 상태 — 포커스가 남아 있다
+  rows.dispatch('change', { target: field });
+
+  assert.equal(app.Store.getPomodoro()[0].focus, 25, 'store가 범위 밖 값을 지켜내지 못했다');
+  assert.equal(field.value, '25', '화면 칸만 범위 밖 값에 남았다');
+
+  // 정상 값일 때는 손대지 않는다 — 치던 중에 칸이 튀면 안 된다
+  field.value = '30';
+  rows.dispatch('change', { target: field });
+  assert.equal(field.value, '30');
+  assert.equal(app.Store.getPomodoro()[0].focus, 30);
+});
+
+test('상태가 통째로 갈리면 서 있는 구간도 새 길이로 다시 선다', () => {
+  // 칸만 맞추면 반대쪽 절반이 남는다 — 칸은 50분인데 시계는 25:00이고,
+  // `시작`은 25분을 돌리고 `초기화`는 50:00으로 선다.
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const id = (n) => app.document.getElementById(n);
+
+  t.togglePomo(true);
+  t.cycleEnter(0, 'focus', false);     // 1회차 집중을 세워둔다 (멈춘 채)
+  assert.equal(id('pomo-time').textContent, '25:00');
+
+  // 옆 탭이 1회차 집중을 50분으로 고쳤다
+  app.Store.setPomodoro([
+    { focus: 50, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 25 }
+  ]);
+  app.sandbox.__appTest.adoptExternal();
+
+  assert.equal(id('pomo-time').textContent, '50:00', '시계가 옛 길이에 남았다');
+  assert.equal(t.pomoState().pomoLength, 50 * 60);
 });
 
 // ── 미니 타이머 불투명도 ────────────────────────────────

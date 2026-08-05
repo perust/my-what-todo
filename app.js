@@ -239,7 +239,7 @@
     searchClear.hidden = true;
     renderTheme();
     syncPomoSettings(true);
-    renderPomo();
+    reflectLengthChange(); // 가져온 회차 길이를 서 있는 구간에도 세운다 (adoptExternal과 같은 이유)
     render();
   }
 
@@ -274,8 +274,10 @@
 
     // 뽀모도로 설정도 함께 갈렸다. 입력 칸을 되맞추지 않으면 저장본에는 50분이
     // 들어 있는데 칸에는 25가 남아, 그대로 사이클을 돌리면 50:00이 뜬다.
+    // **시계도 함께 세운다** — 칸만 맞추면 반대쪽 절반이 남는다. 칸은 50분인데
+    // 시계는 25:00이고, `시작`은 25분을 돌리고 `초기화`는 50:00으로 선다.
     syncPomoSettings(true);
-    renderPomo();
+    reflectLengthChange();
     render();
   }
 
@@ -720,6 +722,11 @@
     // 흐르는 숫자만 보인다 — 집중이 끝난 것인지 아직인지 알 방법이 없다.
     pendingNext = nextOf(cycleRound, cyclePhase);
 
+    // 눌러야 이어지는데 누를 자리가 화면에 하나도 없으면 안 된다. 패널을 닫고
+    // 미니까지 거둬둔 사람에게는 "휴식 시작을 누르면 이어집니다"가 없는 버튼을
+    // 가리키는 말이 된다. 거둔 뜻은 그 판에 걸린 것이었으므로 여기서 되살린다.
+    if (pomoPanel.hidden) miniDismissed = false;
+
     renderPomo();
     // 다음이 집중이면 올라가고 휴식이면 내려간다. 화면을 보지 않아도 갈라 들린다.
     pomoChime(pendingNext.phase === 'focus');
@@ -890,6 +897,15 @@
   let miniDismissed = false;
 
   /**
+   * 불투명도 손잡이를 만지는 중인가.
+   *
+   * 손잡이는 패널 안에 있고 미니 타이머는 패널이 닫혀야 뜬다. 그대로 두면
+   * **조절하는 내내 무엇이 얼마나 옅어지는지 볼 수가 없다** — 바뀌는 것은 옆의
+   * 숫자뿐이고, 손을 떼고 패널을 닫아야 결과가 보인다. 만지는 동안만 띄워 보여준다.
+   */
+  let veilPreview = false;
+
+  /**
    * 바탕의 진하기를 화면에 옮긴다. **저장하지는 않는다** — 끄는 동안 매 순간 저장하면
    * 판 번호가 수십 번 올라가 다른 탭이 그때마다 통째로 다시 읽는다 (F-20).
    *
@@ -911,7 +927,10 @@
 
   function renderMini(clock, label) {
     // 별도 창으로 빼놓았으면 이쪽은 접는다. 같은 시계를 두 군데 띄울 이유가 없다.
-    const show = pomoActive() && pomoPanel.hidden && !miniDismissed && pipWindow === null;
+    // 다만 불투명도를 조절하는 동안에는 패널이 열려 있어도 띄운다 — 그러지 않으면
+    // 지금 무엇을 조절하고 있는지가 화면에 없다.
+    const show =
+      (pomoActive() && pomoPanel.hidden && !miniDismissed && pipWindow === null) || veilPreview;
 
     setHidden(pomoMini, !show);
     // 토스트가 이 자리로 올라오지 않게 알린다. 겹치면 방금 생긴 `휴식 시작` 버튼이
@@ -923,6 +942,9 @@
 
     setText(pomoMiniTime, clock);
     setText(pomoMiniPhase, label || `${Math.round(pomoLength / 60)}분`);
+    // 미리보기로 띄운 것임을 알린다. 지금 걸린 판이 없는데 시계가 떠 있으면
+    // 뭔가 돌아가는 줄 안다.
+    pomoMini.classList.toggle('is-preview', veilPreview && !pomoActive());
     if (waiting) setText(pomoMiniNext, nextLabel());
     setHidden(pomoMiniNext, !waiting);
 
@@ -2609,8 +2631,10 @@
     const field = e.target.closest('.pomo-set-input');
     if (!field) return;
 
+    const round = Number(field.dataset.round);
+    const key = field.dataset.key;
     const cycle = Store.getPomodoro();
-    cycle[Number(field.dataset.round)][field.dataset.key] = Number(field.value);
+    cycle[round][key] = Number(field.value);
 
     if (!saved(Store.setPomodoro(cycle))) {
       // 변경이 통째로 되돌아갔다. 칸에 남은 값은 이제 저장본과 다르므로,
@@ -2621,7 +2645,12 @@
       return;
     }
 
-    syncPomoSettings(false);
+    // 저장은 됐지만 store가 범위 밖 값을 직전 값으로 되돌렸다면, 화면 칸에 남은
+    // 것은 이제 저장본과 다르다. **포커스가 그 칸에 있어도 되맞춘다** — Enter로
+    // 확정하면 포커스가 그 칸에 남는데, 그때만 `false`가 그 칸을 건너뛰어
+    // 화면은 999인데 도는 것은 25분인 상태가 그대로 굳는다.
+    const clamped = Store.getPomodoro()[round][key] !== Number(field.value);
+    syncPomoSettings(clamped);
     reflectLengthChange();
   });
 
@@ -2634,13 +2663,28 @@
 
   // 끄는 동안에는 화면만 따라온다. 여기서 저장하면 한 번 끌 때마다 판 번호가
   // 수십 번 올라가고, 그때마다 다른 탭이 고치던 것과 되돌릴 수 있던 5초가 날아간다.
-  pomoVeil.addEventListener('input', () => paintMiniVeil(Number(pomoVeil.value)));
+  pomoVeil.addEventListener('input', () => {
+    veilPreview = true;
+    paintMiniVeil(Number(pomoVeil.value));
+    renderPomo(); // 미리보기를 띄우거나 값에 맞춰 다시 칠한다
+  });
+
+  // 손잡이에서 손이 떠나면 미리보기를 거둔다. `change`만으로는 부족하다 —
+  // 값을 바꾸지 않고 만지기만 하면 `change`가 오지 않아 미리보기가 남는다.
+  for (const away of ['blur', 'pointerup', 'pointercancel']) {
+    pomoVeil.addEventListener(away, () => {
+      if (!veilPreview) return;
+      veilPreview = false;
+      renderPomo();
+    });
+  }
 
   // 손을 뗄 때 한 번 저장한다. 성공하든 실패하든 화면은 **저장본이 지키고 있는 값**으로
   // 되맞춘다 — 실패한 채로 두면 화면은 옅은데 다음에 열면 진한 채로 돌아온다.
   pomoVeil.addEventListener('change', () => {
     saved(Store.setMiniOpacity(Number(pomoVeil.value)));
     paintMiniVeil(Store.getMiniOpacity());
+    renderPomo();
   });
 
   pomoPanel.addEventListener('keydown', (e) => {

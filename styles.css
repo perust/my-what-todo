@@ -610,7 +610,11 @@ body {
   height: 168px;
 }
 
-.pomo-dial-face svg {
+/* **직계 자식만** 잡는다. 이 안에는 눈금 말고도 빼놓은 창의 버튼 아이콘이 들어
+   있어서(`.pomo-dial-label > .pip-action > svg`), `>`를 빼면 그 아이콘까지 버튼을
+   가장자리까지 채운다. 지금은 뒤에 오는 `.pip-action svg`가 가리고 있을 뿐이라,
+   두 규칙의 순서가 바뀌면 되살아난다. */
+.pomo-dial-face > svg {
   width: 100%;
   height: 100%;
 }
@@ -814,6 +818,15 @@ body {
   display: none;
 }
 
+/* 불투명도를 조절하는 동안 미리 보여주는 상태. 걸린 판이 없는데 시계가 떠 있으면
+   무언가 돌아가는 줄 알기 때문에, 지금 무엇을 보고 있는지 한 줄로 말한다. */
+.pomo-mini.is-preview .pomo-mini-time::after {
+  content: ' 미리보기';
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
 .pomo-mini.is-running,
 .pomo-mini.is-waiting {
   --mini-line: color-mix(in srgb, var(--focus) 55%, var(--border));
@@ -1012,6 +1025,19 @@ body.pip.is-text .pip-box {
   padding: 10px 30px 10px 10px;
 }
 
+/* 148px은 손으로 센 값이었고, 그 셈이 가장 긴 구간 이름(`긴 휴식 시작`)을 빠뜨렸다.
+   폭 240px — 브라우저가 강제하는 최소이자 처음 열릴 때의 폭 — 에서 대기 상태가 되면
+   시계 앞자리와 유일한 조작 버튼이 함께 잘렸다. 넘친 것을 `overflow: hidden`이
+   잘라내 스크롤조차 안 된다.
+
+   그래서 **줄이 모자라면 접히게** 둔다. 잘리는 것보다 두 줄이 낫고, 창 높이는
+   사용자가 늘릴 수 있지만 잘린 글자는 되찾을 방법이 없다.
+   구간 이름은 줄바꿈을 허용해 그 줄이 가장 먼저 양보하게 한다. */
+body.pip.is-text .pomo-dial-label {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 body.pip.is-text .pip-time {
   font-size: clamp(15px, min(calc(100vh - 30px), calc((100vw - 148px) / 2.6)), 44px);
 }
@@ -1019,6 +1045,9 @@ body.pip.is-text .pip-time {
 body.pip.is-text .pip-phase {
   display: inline;
   font-size: clamp(10px, calc(100vh / 9), 12px);
+  /* 다른 자리에서는 한 줄로 두지만 여기서는 접히는 쪽이 낫다 */
+  white-space: normal;
+  text-align: center;
 }
 
 body.pip.is-text .pip-action {
@@ -1823,9 +1852,13 @@ body.pip.is-waiting .pip-action {
   color: var(--text-dim);
 }
 
-.priority-3 .todo-priority {
-  opacity: 0.6;
-}
+/* 3의 숫자를 더 흐리게 하던 `opacity: 0.6`을 걷어냈다. 2.42:1이었고 문맥 행과
+   겹치면 0.33이 되어 1.57:1까지 내려갔는데, 그 흐림을 읽히는 선(4.5:1) 안으로
+   끌어올리면 남는 차이가 눈에 보이지 않을 만큼 작다.
+
+   애초에 기댈 신호가 아니었다 — 이 파일 맨 위에 적어둔 대로 **숫자가 곧 표시**이고
+   (`.todo-priority`), 제목도 이미 2·3에서 `--text-dim`으로 내려간다. 하나를 더
+   흐리게 해서 얻는 것보다 읽히지 않게 되는 쪽이 크다. */
 
 .todo-check {
   flex: none;
@@ -2021,8 +2054,17 @@ button.badge:hover {
 
 /* ── 문맥 행 — 보여주기만 한다 ──────────────────────── */
 
+/* **`opacity`로 흐리게 하지 않는다.** 겹치면 대비가 그만큼 떨어지고, 얼마나
+   떨어졌는지는 계산해보기 전에는 보이지 않는다 — 0.55에서 흐린 글자가 2.22:1,
+   카테고리 배지가 2.32:1까지 내려가 있었다. 같은 이유로 `.tag-count`에서도
+   한 번 걷어냈다. 색을 직접 고르고, 배경으로 "지금 자리"임을 말한다. */
 .todo.is-context {
-  opacity: 0.55;
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
+.todo.is-context .todo-title {
+  color: var(--text-dim);
+  font-weight: 500;
 }
 
 .todo.is-context .todo-priority {
@@ -2051,8 +2093,13 @@ button.badge:hover {
   color: var(--text);
 }
 
+/* 세로 여백만 준다. **`padding` 한 벌로 적으면 `.todo-child`의 들여쓰기가 함께
+   지워진다** — 특이도가 같고 이쪽이 뒤라 이긴다. 실제로 형제 하위 행보다 52px
+   왼쪽에 서 있었고, 연결선이 그 입력칸 위를 가로질렀다.
+   가로 여백은 `.todo`(좌우 `--row-pad`)와 `.todo-child`(들여쓰기)에서 온다. */
 .todo-draft {
-  padding: 6px 12px;
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .todo-draft-input {
