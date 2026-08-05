@@ -514,6 +514,34 @@ body {
   font-weight: 600;
 }
 
+.pomo-run[hidden] {
+  display: none;
+}
+
+/* 다음 구간을 잇는 버튼. 여기서 멈춰 선 채로 기다리는 중이라 눌러야 할 것이
+   이것 하나뿐이다. 테두리만이 아니라 바탕까지 채워 그 사실을 말한다. */
+.pomo-next {
+  border-color: transparent;
+  background: var(--focus);
+  color: var(--surface);
+}
+
+.pomo-next:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--focus) 84%, var(--text));
+  color: var(--surface);
+}
+
+/* 끝나서 기다리는 중임을 테두리로도 알린다. 돌아가는 중(.is-running)과 같은 굵기지만
+   색이 다르다 — 시계가 00:00에 멈춰 있는 것만으로는 다 읽은 것인지 알기 어렵다. */
+.pomo.is-waiting {
+  border-color: color-mix(in srgb, var(--focus) 60%, var(--border));
+}
+
+.pomo.is-waiting .pomo-time {
+  color: var(--focus);
+}
+
 .pomo-icon {
   display: inline-flex;
   align-items: center;
@@ -531,6 +559,12 @@ body {
 .pomo-icon:hover {
   background: color-mix(in srgb, var(--text) 8%, transparent);
   color: var(--text);
+}
+
+/* inline-flex는 hidden보다 세다. 이 줄이 없으면 지원하지 않는 브라우저에서도
+   `창으로 빼기`가 그대로 보이고, 눌러도 아무 일이 없다. */
+.pomo-icon[hidden] {
+  display: none;
 }
 
 .pomo-icon.is-active {
@@ -707,6 +741,184 @@ body {
 .pomo-set-note {
   color: var(--text-dim);
   font-size: 12px;
+}
+
+/* ── 미니 타이머 — 패널을 닫아도 남는다 ─────────────── */
+
+/* 반투명하게 두되 **글자까지 흐리지 않는다.** 바탕만 반투명으로 깔고 글자는
+   불투명한 색을 그대로 쓴다. opacity로 통째로 흐리면 대비가 그만큼 떨어지고,
+   얼마나 떨어졌는지는 계산해보기 전에는 보이지 않는다.
+
+   82%면 뒤에 오는 것이 --bg든 --surface든 섞인 결과가 원래 --surface에서
+   거의 벗어나지 않는다 (라이트 #fdfdfd, 다크 #1a1a1e). 두 테마 모두에서
+   --text와 --text-dim의 대비가 평면 --surface 위와 같은 자리에 남는다. */
+.pomo-mini {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+}
+
+.pomo-mini[hidden] {
+  display: none;
+}
+
+.pomo-mini.is-running,
+.pomo-mini.is-waiting {
+  border-color: color-mix(in srgb, var(--focus) 55%, var(--border));
+}
+
+/* 휴식은 다른 상태다. 값은 .pomo.is-rest와 같다. */
+.pomo-mini.is-rest {
+  --focus: light-dark(#006c4c, #57d3a4);
+}
+
+.pomo-mini-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pomo-mini-time {
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.pomo-mini.is-running .pomo-mini-time,
+.pomo-mini.is-waiting .pomo-mini-time {
+  color: var(--focus);
+}
+
+.pomo-mini-phase {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pomo-mini-next {
+  flex: none;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--focus);
+  color: var(--surface);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pomo-mini-next:hover {
+  background: color-mix(in srgb, var(--focus) 84%, var(--text));
+}
+
+.pomo-mini-next[hidden] {
+  display: none;
+}
+
+.pomo-mini-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.pomo-mini-close:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+/* ── 빼놓은 창 (Document Picture-in-Picture) ─────────── */
+
+/* 이 규칙은 별도 창의 문서에 걸린다. 그 창은 같은 styles.css를 물려받지만
+   `body`의 여백과 640px 폭은 거기서 쓸모가 없다 — 창 전체가 시계 하나다. */
+body.pip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  padding: 0;
+}
+
+.pip-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+}
+
+.pip-phase {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pip-time {
+  color: var(--text);
+  font-size: 40px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  line-height: 1.1;
+}
+
+body.pip.is-running .pip-time,
+body.pip.is-waiting .pip-time {
+  color: var(--focus);
+}
+
+/* 값은 .pomo.is-rest와 같다. */
+body.pip.is-rest {
+  --focus: light-dark(#006c4c, #57d3a4);
+}
+
+.pip-action {
+  padding: 6px 14px;
+  border: 1px solid var(--focus);
+  border-radius: 7px;
+  background: none;
+  color: var(--focus);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* 기다리는 중에는 누를 것이 이것 하나뿐이다. 바탕까지 채워 그 사실을 말한다. */
+body.pip.is-waiting .pip-action {
+  border-color: transparent;
+  background: var(--focus);
+  color: var(--surface);
 }
 
 /* ── 요약 줄 ────────────────────────────────────────── */
@@ -1775,6 +1987,15 @@ button.badge:hover {
   display: none;
 }
 
+/* 미니 타이머가 떠 있는 동안에는 토스트를 그 위로 비켜준다.
+   토스트는 화면 폭에 따라 오른쪽 끝까지 자라므로 두 자리가 실제로 겹친다.
+   겹치면 방금 생긴 `휴식 시작` 버튼이 그 사실을 알리는 알림에 가려,
+   알리려던 그 동작을 누를 수 없게 된다 — 알림은 5초 뒤에 사라지지만
+   그 5초가 하필 눌러야 하는 순간이다. */
+body.has-mini .toast {
+  bottom: 84px;
+}
+
 .toast-undo {
   padding: 4px 10px;
   border: 1px solid var(--border);
@@ -1957,6 +2178,79 @@ button.badge:hover {
   line-height: 1.5;
 }
 
+/* ── 문의하기 ───────────────────────────────────────── */
+
+.dialog-contact {
+  width: min(400px, calc(100vw - 32px));
+}
+
+.contact-field + .contact-field {
+  margin-top: 10px;
+}
+
+.contact-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.contact-input,
+.contact-textarea {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+
+.contact-input {
+  height: 38px;
+  padding: 0 10px;
+}
+
+.contact-textarea {
+  padding: 8px 10px;
+  line-height: 1.5;
+  /* 세로로만 늘린다. 가로로 끌면 상자 밖으로 나간다. */
+  resize: vertical;
+}
+
+.contact-input::placeholder,
+.contact-textarea::placeholder {
+  color: var(--text-dim);
+}
+
+/* 카테고리 오류와 같은 모양이다. 색을 하나 더 들이지 않고 `--text`로 적고
+   크기로 구분한다 — 색은 카테고리·우선순위·토마토까지다. */
+.contact-error {
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.contact-error[hidden] {
+  display: none;
+}
+
+.contact-hint {
+  margin: 12px 0 16px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 주소는 눈으로 옮겨 적는 자리다. 붙은 글자가 갈라지지 않게 폭을 고정한다. */
+.contact-address {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
 .dialog-title {
   margin: 0 0 8px;
   font-size: 15px;
@@ -1990,7 +2284,12 @@ button.badge:hover {
   border-color: var(--text-dim);
 }
 
-.dialog-button.is-danger {
+/* 이 상자에서 눌러야 할 것 하나를 켠다. `is-danger`와 같은 모양이다 —
+   되돌릴 수 없다는 뜻과 이것을 누르라는 뜻이 갈라져야 할 자리가 아직 없다.
+   `is-primary`는 마크업에만 있고 규칙이 없어, Markdown 가져오기 상자에서
+   `가져오기`가 `취소`와 똑같이 보이고 있었다. */
+.dialog-button.is-danger,
+.dialog-button.is-primary {
   border-color: var(--focus);
   color: var(--focus);
   font-weight: 600;

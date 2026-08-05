@@ -517,16 +517,27 @@ function loadApp(options = {}) {
   let markdownImportConflictCalls = 0;
   let loadCount = 0;
   let importCount = 0;
+  const savedRuns = [];
   const categories = [{ id: 'work', name: '업무', hue: 220 }];
+  let pomodoro = [
+    { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 25 }
+  ];
   const mockStore = {
     STORAGE_KEY: 'daily-todo:v1', PRIORITIES: [0, 1, 2, 3], SORTS: ['priority', 'manual'],
     MAX_TITLE: 100, MAX_CATEGORY_NAME: 12, MAX_CATEGORIES: 64,
     POMO_ROUNDS: 4, POMO_MIN_MINUTES: 1, POMO_MAX_MINUTES: 180,
     isPersistent: true, wasCorrupted: false, lastError: null,
     load() { loadCount += 1; return []; },
-    loadRun() { return null; }, saveRun() {},
+    loadRun() { return options.run === undefined ? null : options.run; },
+    saveRun(run) { savedRuns.push(JSON.parse(JSON.stringify(run))); },
     getTheme() { return null; }, getSort() { return 'priority'; },
-    getPomodoro() { return [{ focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 25 }]; },
+    getPomodoro() { return pomodoro.map((round) => ({ ...round })); },
+    setPomodoro(value) {
+      pomodoro = value === null
+        ? [{ focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 25 }]
+        : value.map((round) => ({ ...round }));
+      return true;
+    },
     getCategories() { return categories.map((item) => ({ ...item })); }, countInCategory() { return 0; },
     getRoots(filter) {
       return filter?.type === 'tag' && !Object.prototype.hasOwnProperty.call(filter, 'query')
@@ -679,13 +690,21 @@ function loadApp(options = {}) {
     prepareMarkdownImport, confirmMarkdownImport, formatMarkdownImportSummary,
     setPendingImport(value) { pendingImport = value; },
     setChanging(categoryId, priorityId) { changingCategory = categoryId; changingPriority = priorityId; },
-    state() { return { pendingUndo, changingCategory, changingPriority, queuedNotice, pendingMarkdownImport }; }
+    state() { return { pendingUndo, changingCategory, changingPriority, queuedNotice, pendingMarkdownImport }; },
+
+    restorePomoRun, renderPomo, pomoRefresh, pomoFinish, pomoAdvance, pomoAct,
+    cycleEnter, pomoSet, togglePomo, reflectLengthChange,
+    pomoState() {
+      return { pomoLength, pomoLeft, pomoEndsAt, cycleRound, cyclePhase, pendingNext, miniDismissed };
+    },
+    /** 구간이 끝나는 순간을 만든다. setInterval이 도는 대신 여기서 한 걸음 민다. */
+    expirePomo() { pomoEndsAt = Date.now() - 1000; pomoRefresh(); }
   };
 })();\n`;
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox, { filename: 'app.js' });
   return {
-    sandbox, document, Store, restored, fileSnapshots, markdownSnapshots, timers,
+    sandbox, document, Store, restored, fileSnapshots, markdownSnapshots, timers, savedRuns,
     emitFileStatus(state) { currentFileState = state; fileStatusHandler(state); },
     emitFileError(error = new Error('file error')) { fileErrorHandler(error); },
     emitMarkdownStatus(state) { markdownStatusHandler(state); },
@@ -1531,6 +1550,362 @@ test('Markdown Store 실패·changed·rejection은 UI reset이나 mirror 없이 
   await rejected.sandbox.__appTest.confirmMarkdownImport();
   assert.match(rejected.document.getElementById('toast').textContent, /가져오지 못했습니다/);
   assert.doesNotMatch(rejected.document.getElementById('toast').textContent, /raw|secret|rejection/);
+});
+
+// ── 뽀모도로 구간 수동 전환 (F-22a) ────────────────────
+
+/** 소리를 냈는지 세려고 AudioContext를 갈아 끼운다. pomoChime이 매번 다시 읽는다. */
+function countChimes(app) {
+  const calls = { count: 0 };
+  class Counting { constructor() { calls.count += 1; } }
+  app.sandbox.AudioContext = Counting;
+  app.sandbox.webkitAudioContext = Counting;
+  return calls;
+}
+
+const lastRun = (app) => app.savedRuns[app.savedRuns.length - 1];
+
+test('사이클 집중이 끝나면 다음 구간으로 넘어가지 않고 휴식 시작을 기다린다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const chimes = countChimes(app);
+
+  t.cycleEnter(0, 'focus', true);
+  t.expirePomo();
+
+  const state = t.pomoState();
+  assert.deepEqual(plain(state.pendingNext), { round: 0, phase: 'rest' });
+  assert.equal(state.pomoEndsAt, null, '기다리는 동안에는 시계가 돌지 않는다');
+  assert.equal(state.pomoLeft, 0);
+  assert.equal(state.cyclePhase, 'focus', '끝난 구간을 그대로 붙들고 있다');
+
+  assert.equal(app.document.getElementById('pomo-next').textContent, '휴식 시작');
+  assert.equal(app.document.getElementById('pomo-next').hidden, false);
+  assert.equal(app.document.getElementById('pomo-toggle').hidden, true,
+    '기다리는 동안 `다시 시작`을 함께 두면 어느 쪽이 사이클을 잇는지 읽히지 않는다');
+  assert.equal(app.document.getElementById('pomo-time').textContent, '00:00');
+  assert.equal(app.document.title, '휴식 시작 · My What Todo');
+  assert.equal(chimes.count, 1, '끝났다는 것은 소리로도 알린다');
+  assert.equal(app.document.getElementById('toast').textContent,
+    '집중 1/4 구간이 끝났습니다. 휴식 시작을 누르면 이어집니다.');
+
+  // 눌러야 비로소 다음 구간이 돈다
+  t.pomoAdvance();
+  const next = t.pomoState();
+  assert.equal(next.pendingNext, null);
+  assert.equal(next.cyclePhase, 'rest');
+  assert.equal(next.cycleRound, 0);
+  assert.equal(next.pomoLength, 5 * 60);
+  assert.notEqual(next.pomoEndsAt, null);
+});
+
+test('휴식이 끝날 때도 기다리고, 누르면 다음 회차 집중으로 넘어간다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  t.cycleEnter(0, 'rest', true);
+  t.expirePomo();
+
+  assert.deepEqual(plain(t.pomoState().pendingNext), { round: 1, phase: 'focus' });
+  assert.equal(app.document.getElementById('pomo-next').textContent, '집중 시작');
+  assert.equal(app.document.getElementById('toast').textContent,
+    '휴식 1/4 구간이 끝났습니다. 집중 시작을 누르면 이어집니다.');
+
+  t.pomoAdvance();
+  assert.equal(t.pomoState().cycleRound, 1);
+  assert.equal(t.pomoState().cyclePhase, 'focus');
+});
+
+test('마지막 회차 집중 뒤에는 긴 휴식을 기다리고, 그 뒤 1회차로 돌아온다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  t.cycleEnter(3, 'focus', true);
+  t.expirePomo();
+  assert.equal(app.document.getElementById('pomo-next').textContent, '긴 휴식 시작');
+
+  t.pomoAdvance();
+  assert.equal(t.pomoState().pomoLength, 25 * 60, '4회차 휴식만 길게 잡는다');
+
+  t.expirePomo();
+  assert.deepEqual(plain(t.pomoState().pendingNext), { round: 0, phase: 'focus' }, '한 바퀴를 돌면 처음으로');
+});
+
+test('기다리는 상태는 세션 기록에 남아 새로고침을 넘긴다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  t.cycleEnter(2, 'focus', true);
+  t.expirePomo();
+  assert.deepEqual(lastRun(app).next, { round: 2, phase: 'rest' });
+
+  // 그 기록으로 다시 열면 기다리던 자리에 그대로 선다. 패널도 펴 준다 —
+  // 눌러야 이어지는 버튼이 접힌 채로 남으면 사이클이 여기서 끝난 것과 같다.
+  const back = loadApp({ run: lastRun(app) });
+  const chimes = countChimes(back);
+  back.sandbox.__appTest.togglePomo(false);
+  back.sandbox.__appTest.restorePomoRun();
+
+  assert.deepEqual(plain(back.sandbox.__appTest.pomoState().pendingNext), { round: 2, phase: 'rest' });
+  assert.equal(back.document.getElementById('pomodoro').hidden, false);
+  assert.equal(back.document.getElementById('pomo-next').textContent, '휴식 시작');
+  assert.equal(chimes.count, 0, '되살리면서 소리를 다시 내지는 않는다');
+});
+
+test('자리를 비운 사이에 끝난 구간은 소리 없이 다음 구간 대기로 되살아난다', () => {
+  const app = loadApp({
+    run: { endsAt: Date.now() - 90 * 1000, left: 1500, length: 1500, round: 2, phase: 'focus', next: null }
+  });
+  const t = app.sandbox.__appTest;
+  const chimes = countChimes(app);
+  t.togglePomo(false);
+  t.restorePomoRun();
+
+  assert.deepEqual(plain(t.pomoState().pendingNext), { round: 2, phase: 'rest' },
+    '00:00만 남겨두면 사이클을 이으려고 처음부터 다시 걸어야 한다');
+  assert.equal(t.pomoState().pomoLeft, 0);
+  assert.equal(app.document.getElementById('pomodoro').hidden, false);
+  assert.equal(chimes.count, 0, '흘려보낸 시간을 이제 와 소리로 알리지 않는다');
+  assert.equal(app.document.getElementById('toast').textContent, '', '알림도 뒤늦게 띄우지 않는다');
+});
+
+test('되살린 남은 시간은 설정 길이를 넘지 않는다', () => {
+  // 끝나는 시각은 남길 때 `지금 + 남은 시간`이라 길이를 넘을 수 없다.
+  // 그 사이에 기기 시계가 뒤로 조정되면 넘는다.
+  const app = loadApp({
+    run: { endsAt: Date.now() + 40 * 60 * 1000, left: 1500, length: 1500, round: 0, phase: 'focus', next: null }
+  });
+  app.sandbox.__appTest.restorePomoRun();
+
+  assert.equal(app.sandbox.__appTest.pomoState().pomoLeft, 1500);
+  assert.equal(app.document.getElementById('pomo-time').textContent, '25:00',
+    '25분짜리가 40분을 가리키면 안 된다');
+});
+
+test('돌아갈 시간이 남은 기록에서는 함께 적힌 대기 구간을 버린다', () => {
+  // 우리가 남기는 짝은 아니지만 세션 저장소는 사용자가 고칠 수 있는 자리다.
+  const app = loadApp({
+    run: {
+      endsAt: Date.now() + 600 * 1000, left: 1500, length: 1500,
+      round: 1, phase: 'focus', next: { round: 1, phase: 'rest' }
+    }
+  });
+  const t = app.sandbox.__appTest;
+  t.restorePomoRun();
+
+  assert.equal(t.pomoState().pendingNext, null);
+  assert.notEqual(t.pomoState().pomoEndsAt, null);
+  assert.equal(app.document.getElementById('pomo-next').hidden, true);
+  assert.equal(app.document.getElementById('pomo-toggle').hidden, false);
+});
+
+test('기다리는 중 회차 길이를 고쳐도 대기가 지워지지 않고 새 길이로 시작한다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  t.cycleEnter(0, 'focus', true);
+  t.expirePomo();
+  assert.deepEqual(plain(t.pomoState().pendingNext), { round: 0, phase: 'rest' });
+
+  // 설정 칸 하나를 고친다 — 실제 change 경로를 그대로 탄다
+  const rows = app.document.getElementById('pomo-set-rows');
+  const field = app.document.createElement('input');
+  field.classList.add('pomo-set-input');
+  field.dataset.round = '0';
+  field.dataset.key = 'rest';
+  field.value = '9';
+  rows.appendChild(field);
+  rows.dispatch('change', { target: field });
+
+  assert.deepEqual(plain(t.pomoState().pendingNext), { round: 0, phase: 'rest' },
+    '여기서 구간을 다시 세우면 눌러야 할 `휴식 시작`이 소리 없이 사라진다');
+  assert.equal(app.document.getElementById('pomo-next').hidden, false);
+
+  t.pomoAdvance();
+  assert.equal(t.pomoState().pomoLength, 9 * 60, '새 길이는 누를 때 다시 읽는다');
+});
+
+test('단일 타이머는 기다리지 않고 00:00에서 다시 시작을 남긴다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  t.pomoSet(60);
+  t.pomoAct();          // 시작
+  t.expirePomo();
+
+  assert.equal(t.pomoState().pendingNext, null, '이어질 다음 구간이 없다');
+  assert.equal(app.document.getElementById('pomo-next').hidden, true);
+  assert.equal(app.document.getElementById('pomo-toggle').hidden, false);
+  assert.equal(app.document.getElementById('pomo-toggle').textContent, '다시 시작');
+  assert.equal(app.document.getElementById('toast').textContent, '1분이 끝났습니다.');
+});
+
+test('초기화와 프리셋은 기다리던 구간을 함께 걷어낸다', () => {
+  for (const clear of ['reset', 'preset']) {
+    const app = loadApp();
+    const t = app.sandbox.__appTest;
+    t.cycleEnter(1, 'focus', true);
+    t.expirePomo();
+    assert.notEqual(t.pomoState().pendingNext, null);
+
+    if (clear === 'reset') t.cycleEnter(0, 'focus', false);
+    else t.pomoSet(15 * 60);
+
+    assert.equal(t.pomoState().pendingNext, null, `${clear} 뒤에 대기가 남으면 안 된다`);
+    assert.equal(lastRun(app).next, null);
+    assert.equal(app.document.getElementById('pomo-next').hidden, true);
+    assert.equal(app.document.getElementById('pomo-toggle').hidden, false);
+  }
+});
+
+// ── 미니 타이머 ─────────────────────────────────────────
+
+test('미니 타이머는 패널이 닫혀 있을 때만 뜨고 ×로 거둔 뒤 패널을 다시 열면 되살아난다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const mini = app.document.getElementById('pomo-mini');
+
+  t.togglePomo(true);
+  t.cycleEnter(0, 'focus', true);
+  assert.equal(mini.hidden, true, '패널이 보이는데 같은 시계를 두 번 그리지 않는다');
+
+  t.togglePomo(false);
+  assert.equal(mini.hidden, false);
+  assert.equal(app.document.body.classList.contains('has-mini'), true,
+    '토스트가 이 자리로 올라오지 않게 알린다');
+  assert.equal(app.document.getElementById('pomo-mini-phase').textContent, '집중 1/4');
+
+  app.document.getElementById('pomo-mini-close').click();
+  assert.equal(mini.hidden, true);
+  assert.equal(app.document.body.classList.contains('has-mini'), false);
+
+  t.togglePomo(true);
+  t.togglePomo(false);
+  assert.equal(mini.hidden, false, '한 번 거뒀다고 이 탭이 사는 내내 되살릴 길이 없으면 안 된다');
+});
+
+test('미니 타이머는 걸린 판이 없으면 패널을 닫아도 뜨지 않는다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  t.togglePomo(false);
+  assert.equal(app.document.getElementById('pomo-mini').hidden, true, '건드린 적 없는 타이머');
+
+  t.cycleEnter(0, 'focus', true);
+  t.expirePomo();
+  assert.equal(app.document.getElementById('pomo-mini').hidden, false, '기다리는 중에는 뜬다');
+  assert.equal(app.document.getElementById('pomo-mini-next').textContent, '휴식 시작');
+
+  // 미니에서 바로 이을 수 있어야 한다. 패널을 열어야만 누를 수 있으면 둔 이유가 없다.
+  app.document.getElementById('pomo-mini-next').click();
+  assert.equal(t.pomoState().cyclePhase, 'rest');
+  assert.equal(app.document.getElementById('pomo-mini-next').hidden, true);
+});
+
+test('사라지는 버튼은 포커스를 자리를 이어받는 버튼에게 넘긴다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const id = (name) => app.document.getElementById(name);
+  const focused = () => app.document.activeElement;
+
+  // 가짜 문서의 getElementById는 서로 이어지지 않은 요소를 만든다. 미니 타이머는
+  // "이 안에 포커스가 있었나"로 판정하므로 실제 마크업대로 묶어준다.
+  for (const child of ['pomo-mini-open', 'pomo-mini-next', 'pomo-mini-close']) {
+    id('pomo-mini').appendChild(id(child));
+  }
+
+  // 1) 시간이 되어 `시작`이 사라지는 자리 — 마침 거기에 포커스가 있었다
+  t.togglePomo(true);
+  t.cycleEnter(0, 'focus', true);
+  id('pomo-toggle').focus();
+  t.expirePomo();
+  assert.equal(focused(), id('pomo-next'), '`시작`이 사라지면 `휴식 시작`이 받는다');
+
+  // 2) 그 `휴식 시작`을 눌러 넘어가면 이번엔 그것이 사라진다
+  id('pomo-next').click();
+  assert.equal(focused(), id('pomo-toggle'));
+
+  // 3) 미니 타이머의 × — 미니가 통째로 사라지므로 헤더 버튼이 받는다
+  t.togglePomo(false);
+  assert.equal(id('pomo-mini').hidden, false);
+  id('pomo-mini-close').focus();
+  id('pomo-mini-close').click();
+  assert.equal(focused(), id('pomo-button'));
+
+  // 4) 포커스가 그 버튼에 없었다면 건드리지 않는다
+  t.togglePomo(true);
+  t.togglePomo(false);
+  const outside = id('add-input');
+  outside.focus();
+  id('pomo-mini-open').click();
+  assert.equal(focused(), outside, '누르지도 않은 곳의 포커스를 뺏지 않는다');
+});
+
+// ── 문의하기 ────────────────────────────────────────────
+
+test('빈 문의는 토스트가 아니라 상자 안에서 막고, 실행 취소 5초를 뺏지 않는다', async () => {
+  const app = loadApp();
+  const dialog = app.document.getElementById('contact-dialog');
+  const error = app.document.getElementById('contact-error');
+  const body = app.document.getElementById('contact-body');
+  const send = () => dialog.dispatch('click', {
+    target: { closest: (s) => (s === '[data-choice]' ? { dataset: { choice: 'send' } } : null) }
+  });
+
+  // 되돌릴 것이 걸려 있는 상태에서 눌러본다. 토스트로 알렸다면 이 5초에 밀려
+  // 아무 일도 일어나지 않은 것처럼 보였을 자리다.
+  app.sandbox.__appTest.showUndo([{ id: 'a' }]);
+  const toastBefore = app.document.getElementById('toast').textContent;
+
+  app.document.getElementById('contact-button').click();
+  body.value = '   ';
+  send();
+
+  assert.equal(dialog.open, true, '내용이 비면 상자를 닫지 않는다');
+  assert.equal(error.hidden, false);
+  assert.equal(body.getAttribute('aria-invalid'), 'true');
+  assert.equal(app.document.getElementById('toast').textContent, toastBefore,
+    '실행 취소 토스트를 건드리지 않는다');
+
+  // role="alert"이라 자리를 먼저 열고 글은 다음 태스크에 넣는다
+  assert.equal(error.textContent, '');
+  app.timers.forEach((fn) => fn());
+  assert.equal(error.textContent, '내용을 적어주세요.');
+
+  // 내용을 채우면 오류를 거두고 상자를 닫는다
+  body.value = '실제 내용';
+  send();
+  assert.equal(dialog.open, false);
+  assert.equal(error.hidden, true);
+  assert.equal(body.getAttribute('aria-invalid'), 'false');
+  assert.equal(body.value, '', '메일 앱에 넘긴 뒤에만 비운다');
+});
+
+// ── 세션 기록 검증 (store) ──────────────────────────────
+
+test('loadRun은 사이클이 아닌 기록과 망가진 next를 버린다', () => {
+  const base = { endsAt: null, left: 300, length: 300, phase: 'focus' };
+  const { Store, sessionStorage } = loadStore({ context: true });
+  const read = (run) => {
+    sessionStorage.setItem('daily-todo:v1:run', JSON.stringify(run));
+    return Store.loadRun();
+  };
+
+  assert.deepEqual(plain(read({ ...base, round: 1, next: { round: 2, phase: 'rest' } }).next),
+    { round: 2, phase: 'rest' });
+
+  // 단일 타이머에는 이어질 다음 구간이 없다. 남겨두면 눌러도 갈 곳이 없는 버튼이 선다.
+  assert.equal(read({ ...base, round: null, next: { round: 2, phase: 'rest' } }).next, null);
+  // 회차가 망가져 단일로 되살아나는 기록도 같은 자리에서 함께 걸러야 한다.
+  assert.equal(read({ ...base, round: 99, next: { round: 2, phase: 'rest' } }).next, null);
+
+  assert.equal(read({ ...base, round: 1, next: { round: 4, phase: 'rest' } }).next, null);
+  assert.equal(read({ ...base, round: 1, next: { round: 1.5, phase: 'rest' } }).next, null);
+  assert.equal(read({ ...base, round: 1, next: 'rest' }).next, null);
+  assert.equal(read({ ...base, round: 1 }).next, null);
+  // 알 수 없는 구간 이름은 집중으로 읽는다. loadRun의 phase와 같은 태도다.
+  assert.deepEqual(plain(read({ ...base, round: 1, next: { round: 0, phase: 'nope' } }).next),
+    { round: 0, phase: 'focus' });
 });
 
 (async () => {

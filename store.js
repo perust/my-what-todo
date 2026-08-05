@@ -786,12 +786,28 @@
           ? parsed.round
           : null;
 
+      // 구간이 끝나고 다음을 기다리는 중이었는가. **사이클일 때만 뜻이 있다** —
+      // 단일 타이머에는 이어질 다음 구간이 없다. 회차가 망가져 단일로 되살아나는
+      // 경우까지 여기서 함께 걸러야, 다음 구간 버튼만 남아 눌러도 갈 곳이 없는
+      // 상태가 되지 않는다.
+      const raw = parsed.next;
+      const next =
+        round !== null &&
+        raw &&
+        typeof raw === 'object' &&
+        Number.isInteger(raw.round) &&
+        raw.round >= 0 &&
+        raw.round < POMO_ROUNDS
+          ? { round: raw.round, phase: raw.phase === 'rest' ? 'rest' : 'focus' }
+          : null;
+
       return {
         endsAt: parsed.endsAt ?? null,
         left,
         length,
         round,
-        phase: parsed.phase === 'rest' ? 'rest' : 'focus'
+        phase: parsed.phase === 'rest' ? 'rest' : 'focus',
+        next
       };
     },
 

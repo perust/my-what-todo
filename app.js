@@ -86,6 +86,23 @@
   const pomoSettings = document.getElementById('pomo-settings');
   const pomoSetRows = document.getElementById('pomo-set-rows');
   const pomoSetDefault = document.getElementById('pomo-set-default');
+  const pomoNext = document.getElementById('pomo-next');
+  const pomoPip = document.getElementById('pomo-pip');
+  const pomoMini = document.getElementById('pomo-mini');
+  const pomoMiniOpen = document.getElementById('pomo-mini-open');
+  const pomoMiniTime = document.getElementById('pomo-mini-time');
+  const pomoMiniPhase = document.getElementById('pomo-mini-phase');
+  const pomoMiniNext = document.getElementById('pomo-mini-next');
+  const pomoMiniClose = document.getElementById('pomo-mini-close');
+  const contactButton = document.getElementById('contact-button');
+  const contactDialog = document.getElementById('contact-dialog');
+  const contactSubject = document.getElementById('contact-subject');
+  const contactBody = document.getElementById('contact-body');
+  const contactAddressNode = document.getElementById('contact-address');
+  const contactError = document.getElementById('contact-error');
+
+  /** 프리셋 셋은 마크업에 박혀 있고 늘지도 줄지도 않는다. 매초 다시 찾을 이유가 없다. */
+  const pomoPresets = document.querySelectorAll('.pomo-preset[data-minutes]');
 
   const BASE_TITLE = document.title;
 
@@ -413,6 +430,10 @@
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
     themeToggle.setAttribute('aria-checked', String(dark));
     themeToggle.classList.toggle('is-on', dark);
+
+    // 빼놓은 창은 같은 스타일시트를 쓰지만 `:root`는 따로다. 같이 뒤집지 않으면
+    // 저 창만 반대 색으로 남는다.
+    syncPipTheme();
   }
 
   // ────────────────────────────────────────────────────────────
@@ -438,6 +459,11 @@
     if (node.textContent !== value) node.textContent = value;
   };
 
+  /** 같은 이유로 속성도 바뀐 것만 쓴다. `setText`의 속성판이다. */
+  const setAttr = (node, name, value) => {
+    if (node.getAttribute(name) !== value) node.setAttribute(name, value);
+  };
+
   // 눈금 둘레는 변하지 않는다. 채워지는 길이만 매초 바뀐다.
   pomoDialFill.style.strokeDasharray = String(DIAL_LENGTH);
 
@@ -450,7 +476,23 @@
   let cycleRound = null;
   let cyclePhase = 'focus'; // "focus" | "rest"
 
+  /**
+   * 구간이 끝나고 **다음을 기다리는 중**이면 `{ round, phase }`가 찬다.
+   *
+   * 예전에는 한 구간이 끝나면 다음 구간이 곧바로 이어졌다. 그러면 화면을 보고
+   * 있지 않은 사이에 경계가 지나가버려, 돌아왔을 때 눈에 보이는 것은 그냥
+   * 흐르는 숫자뿐이다 — 집중이 끝난 것인지 아직인지 화면에 남는 단서가 없다.
+   * 지금은 00:00에서 멈춰 서서 누르기를 기다린다. 멈춰 있는 시계는 놓칠 수가 없다.
+   */
+  let pendingNext = null;
+
   const inCycle = () => cycleRound !== null;
+
+  /** 집중 뒤에는 같은 회차의 휴식, 휴식 뒤에는 다음 회차의 집중. 마지막을 마치면 처음으로 돌아온다. */
+  const nextOf = (round, phase) =>
+    phase === 'focus'
+      ? { round, phase: 'rest' }
+      : { round: (round + 1) % Store.POMO_ROUNDS, phase: 'focus' };
 
   /**
    * 새로고침을 넘기려고 지금 상태를 세션 저장소에 남긴다 (F-22).
@@ -463,7 +505,16 @@
   let savedRunSig = null;
 
   const pomoRunSig = () =>
-    [pomoEndsAt, pomoLength, cycleRound, cyclePhase, pomoEndsAt === null ? pomoLeft : '-'].join('|');
+    [
+      pomoEndsAt,
+      pomoLength,
+      cycleRound,
+      cyclePhase,
+      // 기다리는 구간도 요약에 넣는다. 빼면 `휴식 시작`을 띄운 채 새로고침했을 때
+      // 그 버튼만 사라지고 00:00만 남아, 사이클을 이을 길이 없어진다.
+      pendingNext === null ? '-' : `${pendingNext.round}:${pendingNext.phase}`,
+      pomoEndsAt === null ? pomoLeft : '-'
+    ].join('|');
 
   function savePomoRun() {
     const sig = pomoRunSig();
@@ -475,7 +526,8 @@
       left: pomoLeft,
       length: pomoLength,
       round: cycleRound,
-      phase: cyclePhase
+      phase: cyclePhase,
+      next: pendingNext
     });
   }
 
@@ -492,13 +544,35 @@
     pomoLeft = run.left;
     cycleRound = run.round;
     cyclePhase = run.phase;
+    pendingNext = run.next;
 
-    if (run.endsAt === null) return; // 멈춰 있었다. 남은 시간 그대로 세워둔다.
+    if (run.endsAt === null) {
+      // 멈춰 있었다. 남은 시간 그대로 세워둔다.
+      // 다만 **기다리던 것이 있으면 펴서 보여준다** — 눌러야 이어지는 버튼이
+      // 접힌 패널 안에 있으면 사이클이 여기서 끝난 것과 다를 바가 없다.
+      if (pendingNext !== null) togglePomo(true);
+      return;
+    }
 
-    // 자리를 비운 사이에 끝났으면 끝난 자리에 세워둔다. 지금 와서 소리를 내거나
-    // 다음 구간으로 넘기지 않는다 — 흘려보낸 시간을 이제 와 되돌릴 수는 없다.
-    pomoLeft = Math.max(0, Math.round((run.endsAt - Date.now()) / 1000));
-    if (pomoLeft === 0) return;
+    // 위로도 막는다. 끝나는 시각은 남길 때 `지금 + 남은 시간`이라 길이를 넘을 수 없지만,
+    // **그 사이에 기기 시계가 뒤로 조정되면** 넘는다. 그러면 25분짜리가 32분을 가리키고,
+    // 지나간 비율이 음수가 되어 원형 시계가 끝까지 빈 채로 남는다.
+    pomoLeft = Math.min(pomoLength, Math.max(0, Math.round((run.endsAt - Date.now()) / 1000)));
+
+    if (pomoLeft === 0) {
+      // 자리를 비운 사이에 끝났다. 지금 와서 소리를 내지 않는다 — 흘려보낸 시간을
+      // 이제 와 되돌릴 수는 없다. 대신 **다음 구간을 누를 자리는 세워둔다.**
+      // 여기서 아무것도 하지 않으면 돌아왔을 때 00:00만 덩그러니 남아,
+      // 사이클을 이으려면 처음부터 다시 걸어야 한다.
+      if (inCycle() && pendingNext === null) pendingNext = nextOf(cycleRound, cyclePhase);
+      if (pendingNext !== null) togglePomo(true);
+      return;
+    }
+
+    // 아직 돌아갈 시간이 남았다면 기다리는 구간이 함께 있을 수 없다. 우리가 남긴
+    // 기록에서는 나오지 않는 짝이지만, 세션 저장소는 사용자가 고칠 수 있는 자리다.
+    // 그대로 두면 돌아가는 시계와 `휴식 시작`이 한 화면에 같이 선다.
+    pendingNext = null;
 
     pomoStart();
     togglePomo(true); // 돌아가는 중이라면 보이는 편이 맞다
@@ -566,6 +640,7 @@
   /** 단일 타이머로 돌아간다. 프리셋이나 직접 입력을 고르면 사이클에서 빠진다. */
   function pomoSet(seconds) {
     pomoStop();
+    pendingNext = null;
     cycleRound = null;
     pomoLength = seconds;
     pomoLeft = seconds;
@@ -575,6 +650,7 @@
   /** 사이클의 한 구간을 세운다. run이 true면 바로 이어서 돌린다. */
   function cycleEnter(round, phase, run) {
     pomoStop();
+    pendingNext = null;
     cycleRound = round;
     cyclePhase = phase;
     pomoLength = phaseMinutes(round, phase) * 60;
@@ -582,6 +658,37 @@
 
     if (run) pomoStart();
     else renderPomo();
+  }
+
+  /** 기다리던 다음 구간으로 넘어간다. 누르지 않으면 아무 일도 일어나지 않는다. */
+  function pomoAdvance() {
+    if (pendingNext === null) return;
+
+    const { round, phase } = pendingNext;
+    cycleEnter(round, phase, true); // pendingNext는 cycleEnter가 비운다
+  }
+
+  /**
+   * 회차 길이를 고친 뒤 화면에 옮긴다. 지금 돌고 있지 않은 구간이면 새 길이를 곧바로 세운다.
+   *
+   * **기다리는 중에는 세우지 않는다.** 여기서 `cycleEnter`를 부르면 방금 끝난 구간을
+   * 새 길이로 다시 세우면서 기다리던 다음 구간을 함께 지워, 눌러야 할 `휴식 시작`이
+   * 소리 없이 사라진다. 새 길이는 그 버튼을 누를 때 `cycleEnter`가 그 자리에서
+   * 다시 읽으므로, 기다리는 동안 아무것도 하지 않아도 그대로 반영된다.
+   */
+  function reflectLengthChange() {
+    if (inCycle() && pomoEndsAt === null && pendingNext === null) {
+      cycleEnter(cycleRound, cyclePhase, false);
+    } else {
+      renderPomo();
+    }
+  }
+
+  /** 다음 구간을 잇는 버튼에 적을 글자. 무엇이 시작되는지를 그대로 말한다. */
+  function nextLabel() {
+    if (pendingNext === null) return '';
+    if (pendingNext.phase === 'focus') return '집중 시작';
+    return isLongRest(pendingNext.round) ? '긴 휴식 시작' : '휴식 시작';
   }
 
   function pomoFinish() {
@@ -595,16 +702,15 @@
       return;
     }
 
-    // 집중 뒤에는 휴식, 휴식 뒤에는 다음 회차. 마지막 회차를 마치면 처음으로 돌아온다.
-    const wasFocus = cyclePhase === 'focus';
-    const nextRound = wasFocus ? cycleRound : (cycleRound + 1) % Store.POMO_ROUNDS;
-    const nextPhase = wasFocus ? 'rest' : 'focus';
+    // **다음 구간으로 저절로 넘어가지 않는다.** 00:00에 멈춰 서서 기다린다.
+    // 저절로 넘어가면 자리를 비운 사이에 경계가 지나가버려, 돌아왔을 때는
+    // 흐르는 숫자만 보인다 — 집중이 끝난 것인지 아직인지 알 방법이 없다.
+    pendingNext = nextOf(cycleRound, cyclePhase);
 
-    const ended = phaseLabel();
-    cycleEnter(nextRound, nextPhase, true);
-
-    pomoChime(nextPhase === 'focus');
-    showNotice(`${ended} 구간이 끝났습니다. 이어서 ${phaseLabel()} 구간을 시작합니다.`);
+    renderPomo();
+    // 다음이 집중이면 올라가고 휴식이면 내려간다. 화면을 보지 않아도 갈라 들린다.
+    pomoChime(pendingNext.phase === 'focus');
+    showNotice(`${phaseLabel()} 구간이 끝났습니다. ${nextLabel()}을 누르면 이어집니다.`);
   }
 
   /** 소리 파일을 두지 않는다 — 외부 요청 0건을 지키려고 그 자리에서 만든다. */
@@ -659,8 +765,19 @@
     }
   }
 
+  /**
+   * 시작·계속 버튼에 적을 글자. 패널과 별도 창이 같은 자리에서 가져다 쓴다.
+   * 끝난 뒤에는 한 번 더 눌러 바로 다음 판을 돌릴 수 있게 한다.
+   */
+  function runLabel() {
+    if (pomoEndsAt !== null) return '일시정지';
+    if (pomoLeft === 0) return '다시 시작';
+    return pomoLeft < pomoLength ? '계속' : '시작';
+  }
+
   function renderPomo() {
     const running = pomoEndsAt !== null;
+    const waiting = pendingNext !== null;
     const clock = pomoClock(pomoLeft);
     const label = phaseLabel();
 
@@ -668,36 +785,54 @@
     setText(pomoPhase, label);
     pomoPhase.hidden = label === '';
 
-    // 끝난 뒤에는 한 번 더 눌러 바로 다음 판을 돌릴 수 있게 한다.
-    const toggleLabel = running
-      ? '일시정지'
-      : pomoLeft === 0
-        ? '다시 시작'
-        : pomoLeft < pomoLength
-          ? '계속'
-          : '시작';
-    setText(pomoToggle, toggleLabel);
+    // 기다리는 동안에는 `다시 시작`을 치운다. 나란히 두면 방금 끝난 구간을 한 번 더
+    // 도는 버튼과 사이클을 잇는 버튼이 같은 줄에 서서, 어느 쪽이 이어가는 것인지
+    // 읽히지 않는다. 언제나 눌러야 할 것 하나만 남긴다.
+    //
+    // 그런데 이 자리는 **누가 눌러서가 아니라 시간이 되어** 바뀐다. 마침 `시작`에
+    // 포커스를 두고 있었다면 그것이 사라지며 포커스가 몸통으로 떨어지므로,
+    // 자리를 이어받는 버튼에게 넘긴다 (handOver와 같은 이유다).
+    const handOverToNext = waiting && document.activeElement === pomoToggle;
 
+    if (waiting) setText(pomoNext, nextLabel());
+    pomoNext.hidden = !waiting;
+    pomoToggle.hidden = waiting;
+    setText(pomoToggle, runLabel());
+    if (handOverToNext) pomoNext.focus();
+
+    pomoPanel.classList.toggle('is-waiting', waiting);
     pomoPanel.classList.toggle('is-running', running);
     pomoPanel.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
-    pomoButton.classList.toggle('is-running', running);
+    pomoButton.classList.toggle('is-running', running || waiting);
     pomoButton.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
     pomoCycleButton.classList.toggle('is-active', inCycle());
 
-    // 배경 탭에서도 남은 시간이 보이게 제목에 얹는다
-    const title = running ? `${clock} · ${BASE_TITLE}` : BASE_TITLE;
+    // 배경 탭에서도 남은 시간이 보이게 제목에 얹는다.
+    // 기다리는 중에는 남은 시간 대신 **누를 것**을 적는다 — 00:00만 적으면
+    // 탭 목록에서는 멈춘 것인지 끝난 것인지 갈라지지 않는다.
+    const title = waiting
+      ? `${nextLabel()} · ${BASE_TITLE}`
+      : running
+        ? `${clock} · ${BASE_TITLE}`
+        : BASE_TITLE;
     if (document.title !== title) document.title = title;
 
     // 지금 무엇으로 돌아갈지는 켜진 버튼 하나로 읽는다. 프리셋 중 어느 것도 아니면
     // 직접 입력한 길이라는 뜻이므로 `설정`을 켠다 — 아무것도 켜져 있지 않으면
     // 시작을 눌렀을 때 몇 분짜리가 도는지 알 방법이 없다.
     let onPreset = false;
-    for (const preset of document.querySelectorAll('.pomo-preset[data-minutes]')) {
+    for (const preset of pomoPresets) {
       const active = !inCycle() && Number(preset.dataset.minutes) * 60 === pomoLength;
       if (active) onPreset = true;
       preset.classList.toggle('is-active', active);
     }
     pomoApply.classList.toggle('is-active', !inCycle() && !onPreset);
+
+    // 눈에 보이는 그림과 읽히는 이름을 한 자리에서 같이 고친다. 여는 자리에서만
+    // 고치면 창을 창 자신의 X로 닫았을 때 "닫기"에 멈춘 채 남는다.
+    const popped = pipWindow !== null;
+    pomoPip.classList.toggle('is-active', popped);
+    setAttr(pomoPip, 'aria-label', popped ? '타이머 창 닫기' : '타이머를 창으로 빼기');
 
     // 흐른 만큼 원이 채워진다
     const done = pomoLength > 0 ? 1 - pomoLeft / pomoLength : 0;
@@ -706,8 +841,179 @@
     setText(pomoDialPhase, label || `${Math.round(pomoLength / 60)}분`);
     renderDots();
 
+    renderMini(clock, label);
+    renderPip(clock, label);
+
     // 상태가 바뀐 자리마다 부르지 않는다. 어차피 전부 여기를 지나므로 여기서 한 번만 본다.
     savePomoRun();
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // 미니 타이머 — 패널을 닫아도 화면 오른쪽 아래에 남는다
+  // ────────────────────────────────────────────────────────────
+
+  /** ×로 거둔 뒤에는 다시 뜨지 않는다. 패널을 다시 열면 그 뜻을 거둔 것으로 본다. */
+  let miniDismissed = false;
+
+  /**
+   * 한 판이 걸려 있는가. 시작한 적이 없거나 초기화한 직후에는 아니다.
+   * `pomoLeft !== pomoLength`가 일시정지와 끝난 자리를 함께 잡는다.
+   */
+  const pomoActive = () =>
+    pomoEndsAt !== null || pendingNext !== null || pomoLeft !== pomoLength;
+
+  function renderMini(clock, label) {
+    // 별도 창으로 빼놓았으면 이쪽은 접는다. 같은 시계를 두 군데 띄울 이유가 없다.
+    const show = pomoActive() && pomoPanel.hidden && !miniDismissed && pipWindow === null;
+
+    pomoMini.hidden = !show;
+    // 토스트가 이 자리로 올라오지 않게 알린다. 겹치면 방금 생긴 `휴식 시작` 버튼이
+    // 그 사실을 알리는 알림에 가려, 알리려던 그 동작을 누를 수 없게 된다.
+    document.body.classList.toggle('has-mini', show);
+    if (!show) return;
+
+    const waiting = pendingNext !== null;
+
+    setText(pomoMiniTime, clock);
+    setText(pomoMiniPhase, label || `${Math.round(pomoLength / 60)}분`);
+    if (waiting) setText(pomoMiniNext, nextLabel());
+    pomoMiniNext.hidden = !waiting;
+
+    pomoMini.classList.toggle('is-running', pomoEndsAt !== null);
+    pomoMini.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
+    pomoMini.classList.toggle('is-waiting', waiting);
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // 별도 창 — 브라우저를 최소화해도 남는다 (Document Picture-in-Picture)
+  // ────────────────────────────────────────────────────────────
+
+  const pipSupported = 'documentPictureInPicture' in globalThis;
+
+  let pipWindow = null;
+  let pipTime = null;
+  let pipPhase = null;
+  let pipAction = null;
+  let pipTick = null;
+  /** 창이 열리기를 기다리는 중인가. 이 사이에 한 번 더 누르면 두 번째가 거절당한다. */
+  let pipOpening = false;
+
+  /**
+   * 별도 창을 연다. 이 창은 다른 창 위에 계속 떠 있어서 브라우저를 최소화해도 남는다 —
+   * 페이지 안에 그리는 것으로는 닿을 수 없는 자리다.
+   *
+   * 창 위치는 브라우저가 정한다. 정할 수 있는 API가 없고, 대개 화면 오른쪽 아래에 연다.
+   * 반투명하게 만들 길도 없다 — 창 바탕은 브라우저가 불투명하게 깐다.
+   */
+  async function openPip() {
+    if (!pipSupported || pipWindow !== null || pipOpening) return;
+
+    pipOpening = true;
+    let win;
+    try {
+      win = await documentPictureInPicture.requestWindow({ width: 236, height: 176 });
+    } catch (e) {
+      showNotice('창을 열지 못했습니다. 잠시 뒤에 다시 눌러주세요.');
+      return;
+    } finally {
+      pipOpening = false;
+    }
+
+    pipWindow = win;
+
+    // 새 창의 주소는 about:blank라 **상대 경로가 풀리지 않는다.** `base-uri 'none'`이라
+    // <base>를 세워 고칠 길도 없다. 그래서 href 속성 문자열이 아니라 이미 절대 주소로
+    // 풀려 있는 IDL 값을 넘긴다. 같은 출처라 `style-src 'self'`를 그대로 통과한다.
+    for (const sheet of document.querySelectorAll('link[rel="stylesheet"]')) {
+      const copy = win.document.createElement('link');
+      copy.rel = 'stylesheet';
+      copy.href = sheet.href;
+      win.document.head.appendChild(copy);
+    }
+
+    win.document.documentElement.lang = 'ko';
+    syncPipTheme();
+
+    pipPhase = el('span', 'pip-phase');
+    pipTime = el('span', 'pip-time');
+    pipTime.setAttribute('role', 'timer');
+    pipTime.setAttribute('aria-live', 'off');
+
+    pipAction = el('button', 'pip-action');
+    pipAction.type = 'button';
+    pipAction.addEventListener('click', pomoAct);
+
+    const box = el('div', 'pip-box');
+    box.append(pipPhase, pipTime, pipAction);
+    // 본 문서에서 만든 노드도 붙이는 순간 저 창의 것이 된다. 붙은 뒤에도
+    // 이벤트 리스너는 그대로 살아 있어 여기서 건 click이 계속 우리에게 온다.
+    win.document.body.className = 'pip';
+    win.document.body.appendChild(box);
+
+    // **배경 탭에서는 setInterval이 1분에 한 번까지 느려진다.** 본 창의 인터벌만
+    // 믿으면 이 창의 시계가 멈춰 있다가 껑충 뛴다. 이 창은 보이는 창이므로
+    // 여기에도 하나 걸어 그 스로틀링을 비켜간다.
+    pipTick = win.setInterval(pomoRefresh, 250);
+
+    // 창을 닫는 길이 여럿이다 — 창의 X, 우리가 부른 close(), 본 페이지를 떠나는 것.
+    // 어디로 들어와도 여기 한 번은 들른다.
+    win.addEventListener('pagehide', closePipState);
+
+    renderPomo();
+  }
+
+  function closePipState() {
+    if (pipWindow === null) return;
+
+    if (pipTick !== null) {
+      pipWindow.clearInterval(pipTick);
+      pipTick = null;
+    }
+    pipWindow = null;
+    pipTime = null;
+    pipPhase = null;
+    pipAction = null;
+
+    renderPomo();
+  }
+
+  /** 테마는 `:root`의 data-theme 하나로 갈린다. 저 창에도 같은 값을 물려준다. */
+  function syncPipTheme() {
+    if (pipWindow === null) return;
+    pipWindow.document.documentElement.dataset.theme =
+      document.documentElement.dataset.theme ?? '';
+  }
+
+  function renderPip(clock, label) {
+    if (pipWindow === null) return;
+
+    const waiting = pendingNext !== null;
+
+    setText(pipTime, clock);
+    setText(pipPhase, label || `${Math.round(pomoLength / 60)}분`);
+    setText(pipAction, waiting ? nextLabel() : runLabel());
+
+    const body = pipWindow.document.body;
+    body.classList.toggle('is-running', pomoEndsAt !== null);
+    body.classList.toggle('is-rest', inCycle() && cyclePhase === 'rest');
+    body.classList.toggle('is-waiting', waiting);
+  }
+
+  /**
+   * 지금 누르면 무엇이 되는가. 패널의 `시작`, 미니 타이머, 별도 창이 이 하나를 쓴다.
+   * 기다리는 구간이 있으면 그것이 언제나 앞선다.
+   */
+  function pomoAct() {
+    if (pendingNext !== null) {
+      pomoAdvance();
+      return;
+    }
+    if (pomoEndsAt !== null) {
+      pomoPause();
+      return;
+    }
+    if (pomoLeft === 0) pomoLeft = pomoLength; // 끝난 타이머는 처음부터 다시
+    pomoStart();
   }
 
   /**
@@ -761,6 +1067,13 @@
     const next = open ?? pomoPanel.hidden;
     pomoPanel.hidden = !next;
     pomoButton.setAttribute('aria-expanded', String(next));
+
+    // 패널을 다시 열었다면 미니 타이머를 거둔 뜻도 함께 거둔다.
+    // 한 번 ×를 눌렀다고 이 탭이 살아 있는 내내 다시 뜨지 않으면, 되살릴 길이 없다.
+    if (next) miniDismissed = false;
+
+    // 미니 타이머는 패널이 닫혀 있을 때만 뜬다. 그 조건이 방금 바뀌었다.
+    renderPomo();
   }
 
   function togglePomoView(node, button, open) {
@@ -1985,6 +2298,46 @@
 
   pomoButton.addEventListener('click', () => togglePomo());
 
+  /**
+   * 누르면 **그 버튼 자체가 사라지는** 자리가 여럿이다 — 다음 구간을 잇는 버튼도,
+   * 미니 타이머의 시계와 ×도 그렇다. 포커스를 자리를 이어받을 곳으로 넘기지 않으면
+   * 몸통으로 떨어져, 이어지는 Tab이 문서 맨 위에서 다시 시작한다.
+   *
+   * 포인터로 눌렀을 때도 넘어가지만 `:focus-visible`이 아니라 테두리는 생기지 않는다.
+   * 이어받을 곳은 **누른 뒤에** 고른다 — 그 사이에 무엇이 보이는지가 바뀌기 때문이다.
+   */
+  function handOver(from, act, heir) {
+    const hadFocus = from.contains(document.activeElement);
+    act();
+
+    const target = heir();
+    if (hadFocus && target && !target.hidden) target.focus();
+  }
+
+  /** 패널에서 지금 눌러야 할 것 하나. 기다리는 중이면 그것이 `시작`의 자리를 맡는다. */
+  const pomoPrimary = () => (pomoNext.hidden ? pomoToggle : pomoNext);
+
+  // 미니 타이머 — 패널을 닫아도 남는 자리
+  pomoMiniOpen.addEventListener('click', () => {
+    handOver(pomoMini, () => togglePomo(true), pomoPrimary);
+  });
+  pomoMiniClose.addEventListener('click', () => {
+    handOver(pomoMini, () => {
+      miniDismissed = true;
+      renderPomo();
+    }, () => pomoButton);
+  });
+
+  // 별도 창 — 지원하지 않는 브라우저에서는 버튼 자체가 나오지 않는다.
+  // 자리만 남겨두면 눌러도 아무 일이 없는 버튼이 되고, 왜 안 되는지 알 길이 없다.
+  if (pipSupported) {
+    pomoPip.hidden = false;
+    pomoPip.addEventListener('click', () => {
+      if (pipWindow !== null) pipWindow.close();
+      else openPip();
+    });
+  }
+
   // 사이클 — 한 번 누르면 1회차 집중부터 끝까지 이어서 돈다
   pomoCycleButton.addEventListener('click', () => {
     cycleEnter(0, 'focus', true);
@@ -2014,13 +2367,13 @@
     pomoInput.blur();
   });
 
-  pomoToggle.addEventListener('click', () => {
-    if (pomoEndsAt !== null) {
-      pomoPause();
-      return;
-    }
-    if (pomoLeft === 0) pomoLeft = pomoLength; // 끝난 타이머는 처음부터 다시
-    pomoStart();
+  pomoToggle.addEventListener('click', pomoAct);
+
+  // 넘어가고 나면 이 버튼이 사라진다 (handOver 참고)
+  pomoNext.addEventListener('click', () => handOver(pomoNext, pomoAdvance, pomoPrimary));
+  // 미니에서는 이 버튼만 사라지므로 옆에 남는 시계가 자리를 이어받는다
+  pomoMiniNext.addEventListener('click', () => {
+    handOver(pomoMiniNext, pomoAdvance, () => pomoMiniOpen);
   });
 
   pomoReset.addEventListener('click', () => {
@@ -2058,17 +2411,14 @@
     }
 
     syncPomoSettings(false);
-    // 지금 돌고 있지 않은 구간이면 새 길이를 곧바로 반영한다
-    if (inCycle() && pomoEndsAt === null) cycleEnter(cycleRound, cyclePhase, false);
-    else renderPomo();
+    reflectLengthChange();
   });
 
   pomoSetDefault.addEventListener('click', () => {
     if (!saved(Store.setPomodoro(null))) return;
 
     syncPomoSettings(true);
-    if (inCycle() && pomoEndsAt === null) cycleEnter(cycleRound, cyclePhase, false);
-    else renderPomo();
+    reflectLengthChange();
   });
 
   pomoPanel.addEventListener('keydown', (e) => {
@@ -2561,6 +2911,97 @@
   importButton.addEventListener('click', () => {
     importFile.value = ''; // 같은 파일을 다시 골라도 change가 오게 한다
     importFile.click();
+  });
+
+  // ── 문의하기 ────────────────────────────────────────────
+
+  /**
+   * 문의를 받을 주소.
+   *
+   * `mailto:...@...`를 소스에 통째로 적어두지 않는다. 이 저장소는 공개라 그렇게 두면
+   * 수집기가 훑어간다. 조각으로 나눠 두고 누를 때 잇는다 — 소스를 읽는 사람은 여전히
+   * 알 수 있지만, HTML만 긁고 지나가는 쪽에는 이어 붙은 주소가 아예 없다.
+   */
+  const CONTACT_PARTS = ['seungwoo', '3859', 'gmail', 'com'];
+  const contactAddress = () =>
+    `${CONTACT_PARTS[0]}${CONTACT_PARTS[1]}@${CONTACT_PARTS[2]}.${CONTACT_PARTS[3]}`;
+
+  /** 다음 태스크에 넣기로 한 오류 문구. 그 사이에 지워졌으면 넣지 않는다. */
+  let waitingContactError = null;
+
+  /**
+   * 문의 오류 문구. **토스트로 알리지 않는다** — 이 상자는 `showModal()`로 연 모달이라
+   * 토스트가 뒤 배경 아래에 깔리고, 게다가 지운 항목의 5초가 걸려 있으면 `showNotice`가
+   * 알림을 통째로 미뤄버려 눌러도 아무 일이 없는 것처럼 보인다.
+   *
+   * `#contact-error`는 `role="alert"`이다. 자리를 빈 채로 먼저 열고 글은 다음 태스크에
+   * 넣는다 — 같은 태스크에서 둘 다 하면 일부 스크린리더가 읽지 않는다.
+   * 자세한 이유는 `showCategoryError`에 적어뒀다.
+   */
+  function showContactError(text) {
+    // 문구만으로는 "어느 칸이 잘못됐다"가 전해지지 않는다. 칸 자체에도 표시한다.
+    setAttr(contactBody, 'aria-invalid', text ? 'true' : 'false');
+
+    waitingContactError = text || null;
+    contactError.textContent = '';
+
+    if (!text) {
+      contactError.hidden = true;
+      return;
+    }
+
+    contactError.hidden = false;
+    setTimeout(() => {
+      if (waitingContactError === null) return; // 그 사이에 지워졌다
+      contactError.textContent = waitingContactError;
+    });
+  }
+
+  contactButton.addEventListener('click', () => {
+    contactAddressNode.textContent = contactAddress();
+    showContactError('');
+    if (!contactDialog.open) contactDialog.showModal();
+  });
+
+  /**
+   * 이 상자는 `closeOnOutsideClick`에 넣지 않는다. 나머지 상자는 고르지 않고 닫으면
+   * 취소라 잃는 것이 없지만, 여기에는 **적던 글이 들어 있다.** 같은 이유로 닫을 때
+   * 칸을 비우지도 않는다 — Esc로 닫았다가 다시 여는 길이 있고, 그때마다 비우면
+   * 쓰던 글이 소리 없이 사라진다. 메일 앱에 넘긴 뒤에만 비운다.
+   */
+  contactDialog.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-choice]');
+    if (!button) return;
+
+    if (button.dataset.choice === 'cancel') {
+      contactDialog.close();
+      return;
+    }
+
+    const body = contactBody.value.trim();
+    if (body === '') {
+      showContactError('내용을 적어주세요.');
+      contactBody.focus();
+      return;
+    }
+    showContactError('');
+
+    // 주소는 그대로 두고 제목·내용만 인코딩한다. 주소까지 인코딩하면 @와 .이
+    // %40·%2E가 되어 메일 앱이 받는 사람을 읽어내지 못한다.
+    const subject = contactSubject.value.trim() || `${BASE_TITLE} 문의`;
+    const link = el('a');
+    link.href =
+      `mailto:${contactAddress()}` +
+      `?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    link.click();
+
+    contactSubject.value = '';
+    contactBody.value = '';
+    contactDialog.close();
+
+    // 메일 앱에 넘기는 것까지가 우리 몫이다. 실제로 열렸는지는 알 수 없으므로
+    // 보냈다고 단정하지 않는다.
+    showNotice('메일 앱을 열었습니다. 열리지 않으면 문의하기에 적힌 주소로 보내주세요.');
   });
 
   importFile.addEventListener('change', async () => {
