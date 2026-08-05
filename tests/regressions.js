@@ -1083,12 +1083,15 @@ function loadApp(options = {}) {
   assert.notEqual(end, -1, 'app test hook insertion point');
   source = source.slice(0, end) + `
   globalThis.__appTest = {
-    showUndo, showNotice, undo, adoptExternal, render, renderTabs, renderTagBar, setFilter, saved,
+    showUndo, showNotice, showTimerNotice, undo, adoptExternal, render, renderTabs, renderTagBar, setFilter, saved,
     renderFileStatus, renderMarkdownStatus, syncMirrors, queueAdopt,
     prepareMarkdownImport, confirmMarkdownImport, formatMarkdownImportSummary,
     setPendingImport(value) { pendingImport = value; },
     setChanging(categoryId, priorityId) { changingCategory = categoryId; changingPriority = priorityId; },
-    state() { return { pendingUndo, changingCategory, changingPriority, queuedNotice, pendingMarkdownImport }; },
+    state() {
+      return { pendingUndo, changingCategory, changingPriority, queuedNotice,
+        queuedNoticeSpontaneous, pendingMarkdownImport };
+    },
 
     syncPomoSettings, paintMiniVeil, openPip, PIP_ICONS,
     restorePomoRun, renderPomo, pomoRefresh, pomoFinish, pomoAdvance, pomoAct,
@@ -2970,6 +2973,51 @@ test('카테고리 개수는 한 번에 세도 하나씩 세는 것과 같다', 
   // 하위도 함께 센다. 비어 있는 카테고리는 키가 없으므로 0으로 읽어야 한다.
   assert.equal(counts.get(extra.id), 2);
   assert.equal(counts.get(Store.getCategories().find((c) => c.name === '빈칸').id), undefined);
+});
+
+test('저절로 뜨는 알림은 눌러서 나온 답을 밀어내지 않는다', () => {
+  const app = loadApp();
+  const hooks = app.sandbox.__appTest;
+  const toast = () => app.document.getElementById('toast').textContent;
+
+  // 지운 5초가 걸려 있는 동안 사용자가 버튼을 눌렀고, 그 답이 밀렸다.
+  hooks.showUndo([{ id: 'a' }]);
+  hooks.showNotice('창을 열지 못했습니다.');
+  assert.equal(hooks.state().queuedNotice, '창을 열지 못했습니다.');
+
+  // 그 사이에 뽀모도로 구간이 끝난다. 자리가 하나뿐이라 갈아치우면 사용자는
+  // 자기가 누른 버튼이 어떻게 됐는지 영영 듣지 못한다.
+  hooks.showTimerNotice('집중 구간이 끝났습니다.');
+  assert.equal(hooks.state().queuedNotice, '창을 열지 못했습니다.',
+    '눌러서 나온 답이 자리를 지켜야 한다');
+
+  // 5초가 끝나면 그 답이 뜬다. **지금 걸린 것만 민다** — 가짜 타이머는 Map이라
+  // 그대로 훑으면 알림이 새로 거는 타이머까지 같은 자리에서 함께 터져,
+  // 방금 띄운 토스트가 곧바로 다시 닫힌다.
+  [...app.timers.values()].forEach((fn) => fn());
+  assert.equal(toast(), '창을 열지 못했습니다.');
+});
+
+test('저절로 뜬 알림은 나중에 온 답에 자리를 내준다', () => {
+  const app = loadApp();
+  const hooks = app.sandbox.__appTest;
+
+  // 순서가 반대면 이야기가 다르다. 뒤에 온 것이 사용자가 방금 누른 것에 대한
+  // 답이므로, 그쪽이 더 급하다.
+  hooks.showUndo([{ id: 'a' }]);
+  hooks.showTimerNotice('집중 구간이 끝났습니다.');
+  assert.equal(hooks.state().queuedNoticeSpontaneous, true);
+
+  hooks.showNotice('창을 열지 못했습니다.');
+  assert.equal(hooks.state().queuedNotice, '창을 열지 못했습니다.');
+  assert.equal(hooks.state().queuedNoticeSpontaneous, false);
+
+  // 저절로 뜬 것끼리는 나중 것이 이긴다 — 낡은 구간 이야기를 들려줄 이유가 없다.
+  const later = loadApp();
+  later.sandbox.__appTest.showUndo([{ id: 'a' }]);
+  later.sandbox.__appTest.showTimerNotice('집중 구간이 끝났습니다.');
+  later.sandbox.__appTest.showTimerNotice('휴식 구간이 끝났습니다.');
+  assert.equal(later.sandbox.__appTest.state().queuedNotice, '휴식 구간이 끝났습니다.');
 });
 
 (async () => {

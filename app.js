@@ -137,6 +137,12 @@
    * 그 사이에 사용자가 다른 버튼을 눌러 생긴 알림은 여전히 맞는 말이라 버리면 안 된다.
    */
   let queuedNoticeFromDelete = false;
+  /**
+   * 미뤄둔 알림이 **저절로 뜬 것**인가. 뽀모도로 구간이 끝나는 자리뿐이다.
+   * 자리를 하나만 들고 있으므로 무엇이 그 자리를 지킬지 정해야 한다 —
+   * 사용자가 눌러서 나온 답이 먼저 밀려 있으면 이쪽이 밀어내지 않는다.
+   */
+  let queuedNoticeSpontaneous = false;
 
   /** 삭제 확인을 기다리는 카테고리 id. 항목이 남아 있으면 옮겨갈 곳을 물어야 한다. */
   let pendingCategoryRemove = null;
@@ -750,7 +756,7 @@
     if (!inCycle()) {
       renderPomo();
       pomoChime(false);
-      showNotice(`${Math.round(pomoLength / 60)}분이 끝났습니다.`);
+      showTimerNotice(`${Math.round(pomoLength / 60)}분이 끝났습니다.`);
       return;
     }
 
@@ -767,7 +773,7 @@
     renderPomo();
     // 다음이 집중이면 올라가고 휴식이면 내려간다. 화면을 보지 않아도 갈라 들린다.
     pomoChime(pendingNext.phase === 'focus');
-    showNotice(`${phaseLabel()} 구간이 끝났습니다. ${nextLabel()}을 누르면 이어집니다.`);
+    showTimerNotice(`${phaseLabel()} 구간이 끝났습니다. ${nextLabel()}을 누르면 이어집니다.`);
   }
 
   /** 소리 파일을 두지 않는다 — 외부 요청 0건을 지키려고 그 자리에서 만든다. */
@@ -2348,9 +2354,11 @@
     // 자리를 비켜 기다리던 알림이 있으면 이제 보여준다.
     if (queuedNotice !== null) {
       const text = queuedNotice;
+      const spontaneous = queuedNoticeSpontaneous;
       queuedNotice = null;
       queuedNoticeFromDelete = false;
-      showNotice(text);
+      queuedNoticeSpontaneous = false;
+      queueOrShow(text, false, spontaneous);
     }
   }
 
@@ -2366,6 +2374,7 @@
     if (queuedNoticeFromDelete) {
       queuedNotice = null;
       queuedNoticeFromDelete = false;
+      queuedNoticeSpontaneous = false;
     }
     hideUndo();
   }
@@ -2377,6 +2386,7 @@
     pendingUndo = null;
     queuedNotice = null;
     queuedNoticeFromDelete = false;
+    queuedNoticeSpontaneous = false;
 
     const hadFocus = toast.contains(document.activeElement);
     toast.hidden = true;
@@ -2386,16 +2396,36 @@
 
   /**
    * 되돌릴 것이 없는 단순 알림. 토스트를 같이 쓴다.
+   * 사용자가 무언가를 눌러 나온 답은 전부 이쪽이다.
    *
    * **되돌릴 것이 걸려 있는 동안에는 자리를 뺏지 않는다.** 뽀모도로는 아무 때나
    * 구간이 끝나므로, 방금 지운 항목의 5초가 그 알림에 덮여 사라지곤 했다.
    * 알림은 뒤에 다시 뜨지만, 지운 항목은 그 5초가 지나면 영영 되살릴 수 없다.
    * 미뤄둔 알림은 하나만 들고 있는다 — 밀린 것을 줄줄이 띄우는 편이 더 나쁘다.
+   * 그 한 자리를 누가 지키는지는 `showTimerNotice`에 적었다.
    */
   function showNotice(text, fromDelete) {
+    queueOrShow(text, fromDelete === true, false);
+  }
+
+  /**
+   * 사용자가 누르지 않았는데 저절로 뜨는 알림. 뽀모도로 구간이 끝나는 자리뿐이다.
+   *
+   * 미뤄둘 때 **눌러서 나온 답을 밀어내지 않는다.** 미뤄둘 자리가 하나뿐이라
+   * 나중 것이 앞의 것을 갈아치우는데, 앞의 것은 "방금 누른 그것이 어떻게 됐는가"다.
+   * 창을 열지 못했다는 답을 기다리던 사람이 뜬금없이 "집중 구간이 끝났습니다"만
+   * 듣고, 자기가 누른 버튼이 어떻게 됐는지는 영영 듣지 못한다.
+   */
+  function showTimerNotice(text) {
+    queueOrShow(text, false, true);
+  }
+
+  function queueOrShow(text, fromDelete, spontaneous) {
     if (pendingUndo !== null) {
+      if (spontaneous && queuedNotice !== null && !queuedNoticeSpontaneous) return;
       queuedNotice = text;
-      queuedNoticeFromDelete = fromDelete === true;
+      queuedNoticeFromDelete = fromDelete;
+      queuedNoticeSpontaneous = spontaneous;
       return;
     }
 
@@ -2463,6 +2493,7 @@
       if (queuedNoticeFromDelete) {
         queuedNotice = null;
         queuedNoticeFromDelete = false;
+        queuedNoticeSpontaneous = false;
       }
 
       // parentId와 order를 그대로 되살리므로 트리째 돌아온다

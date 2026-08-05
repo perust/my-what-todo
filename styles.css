@@ -684,6 +684,15 @@ body {
   letter-spacing: 0.01em;
 }
 
+/* 시계를 펼치면 **같은 숫자가 머리줄과 원 안에 함께 뜬다.** 머리줄만 물들고
+   원 안이 그대로면 같은 값인데 다른 상태처럼 읽힌다 — 눈이 가는 쪽은 큰 숫자다.
+   `.pomo-time`과 같은 자리에서 같이 물든다. 빼놓은 창은 두 모드가 `.pip-time`
+   하나를 함께 쓰므로 이미 어긋나지 않는다. */
+.pomo.is-running .pomo-dial-time,
+.pomo.is-waiting .pomo-dial-time {
+  color: var(--focus);
+}
+
 .pomo-dial-phase {
   color: var(--text-dim);
   font-size: 12px;
