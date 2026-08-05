@@ -96,12 +96,17 @@ node tests/markdown-sync.js
 ├── markdown-import.js # canonical Markdown 기존 항목 제한 편집 strict parser
 ├── markdown-sync.js   # 페이지 세션 한정 Markdown 연결과 직렬 쓰기 큐
 ├── app.js        # UI 계층: 렌더링과 이벤트. Store와 Parse만 호출한다
+├── pwa.js        # 서비스 워커 등록. 이 한 파일이 설치 기능의 전부다
+├── sw.js         # 서비스 워커. 파일을 붙잡아둬 네트워크 없이도 열리게 한다
+├── manifest.webmanifest # 설치했을 때의 이름·아이콘·독립 창 여부
+├── icons/        # 홈 화면과 시작 메뉴에 뜨는 그림
 ├── tests/
 │   ├── regressions.js  # Node 내장 모듈만 쓰는 회귀 테스트
 │   ├── file-sync.js    # 파일 연결·직렬 저장 focused 테스트
 │   ├── markdown-export.js # Markdown exact bytes·검증 테스트
 │   ├── markdown-import.js # canonical parser·hostile matrix·Store 경계 테스트
-│   └── markdown-sync.js   # Markdown 연결·실패 복구 테스트
+│   ├── markdown-sync.js   # Markdown 연결·실패 복구 테스트
+│   └── pwa.js             # 매니페스트·서비스 워커 목록이 index.html과 어긋나지 않는지
 ├── CLAUDE.md     # 이 저장소에서 지켜야 할 제약
 └── docs/
     ├── todo-app-prd.md         # 상세 명세 (기능·데이터 모델·엣지 케이스)
@@ -111,10 +116,14 @@ node tests/markdown-sync.js
 ## 기술 스택
 
 HTML + CSS + JavaScript(ES2020+)만 씁니다. npm 패키지, 프레임워크, 빌드 도구,
-외부 CDN 요청이 하나도 없습니다. 화면이 한번 뜨고 나면 그 뒤로는 네트워크를 쓰지 않아,
-할 일을 넣고 고치고 지우는 일이 전부 브라우저 안에서 끝납니다. 다만 그 첫 화면은
-받아와야 합니다 — 서비스 워커를 두지 않으므로 네트워크 없이 주소를 열 수는 없습니다.
-`Content-Security-Policy`로 `connect-src 'none'`을 걸어, 밖으로 내보낼 길 자체를 막아뒀습니다.
+외부 CDN 요청이 하나도 없습니다. 편집하는 파일이 곧 배포되는 파일입니다.
+할 일을 넣고 고치고 지우는 일이 전부 브라우저 안에서 끝나고,
+`Content-Security-Policy`로 `connect-src 'none'`을 걸어 밖으로 내보낼 길 자체를 막아뒀습니다.
+
+- 설치: 주소로 들어가 브라우저의 설치 버튼을 누르면 바탕화면·시작 메뉴·홈 화면에
+  아이콘이 생기고, 주소창 없는 독립 창으로 열립니다. **네트워크가 없어도 열립니다** —
+  서비스 워커가 파일을 붙잡아둡니다. 설치는 선택이고, 예전처럼 주소로 들어가
+  브라우저에서 쓰는 것도 그대로 됩니다
 
 - 저장소: `localStorage` 키 하나 (스키마 버전 6).
   돌아가는 타이머만 `sessionStorage`에 따로 두어 탭을 닫으면 사라집니다.
@@ -133,7 +142,9 @@ HTML + CSS + JavaScript(ES2020+)만 씁니다. npm 패키지, 프레임워크, �
   제공하는 브라우저에서만 동작합니다(주로 Chromium 계열). 미지원 브라우저에서는 연결을
   시도하지 않고 안내하며, LocalStorage와 내보내기/가져오기는 그대로 사용할 수 있습니다.
   타이머를 별도 창으로 빼는 것은 Document Picture-in-Picture를 제공하는 Chrome·Edge에서만
-  동작하고, 그 밖에서는 버튼이 나타나지 않습니다 — 페이지 안 미니 타이머는 어디서나 뜹니다
+  동작하고, 그 밖에서는 버튼이 나타나지 않습니다 — 페이지 안 미니 타이머는 어디서나 뜹니다.
+  설치는 Chrome·Edge에서 주소창의 설치 버튼으로, iOS Safari에서는 공유 → `홈 화면에 추가`로
+  합니다. 지원하지 않는 브라우저에서는 등록에 실패해도 앱은 예전과 똑같이 동작합니다
 
 ## 문서
 

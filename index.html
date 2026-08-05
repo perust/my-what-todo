@@ -8,21 +8,31 @@
   <meta name="color-scheme" content="light dark">
   <link rel="stylesheet" href="styles.css">
 
-  <!-- 아이콘을 두지 않지만, 없다고 알려주지 않으면 브라우저가 /favicon.ico를 찾아가
-       img-src에 걸린다. 그 위반이 새로고침마다 콘솔에 쌓이면 진짜 오류가 묻힌다.
-       빈 data: 주소로 "찾을 것 없다"고 못박는다. -->
-  <link rel="icon" href="data:,">
+  <link rel="icon" href="./icons/icon-192.png" type="image/png">
+  <!-- iOS는 매니페스트의 아이콘을 홈 화면에 쓰지 않는다. 이 자리를 따로 봐야 한다. -->
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+
+  <!-- 설치했을 때 이름·아이콘·독립 창 여부가 여기서 나온다.
+       주소는 전부 상대 경로다 — 저장소 이름이 바뀌면 경로도 바뀐다. -->
+  <link rel="manifest" href="./manifest.webmanifest">
+
+  <!-- 설치한 창의 제목 표시줄 색. 매니페스트에도 있지만 그건 고정값이라
+       한쪽 테마에만 맞는다. 여기 값을 app.js가 고른 테마에 맞춰 갈아 끼운다. -->
+  <meta name="theme-color" content="#f6f6f7">
 
   <!--
     이 앱은 밖으로 아무것도 보내지 않는다. 그것을 의도가 아니라 규칙으로 만든다.
     connect-src 'none'이 핵심이다 — 나중에 누가 실수로 주입 구멍을 내더라도
     데이터가 나갈 길이 없다. 인라인 스크립트도 style= 속성도 두지 않으므로
     'unsafe-inline' 없이 걸 수 있다. 새 예외를 더하기 전에 정말 필요한지 따진다.
-    img-src의 data:는 위의 빈 아이콘 하나 때문이다. data: 주소는 네트워크를 타지 않아
-    이것으로 데이터가 밖으로 나갈 수는 없다.
+    img-src·manifest-src·worker-src의 'self'는 설치에 필요한 자리다. 전부 같은 오리진
+    안으로만 열려 있어 데이터가 밖으로 나갈 길은 여전히 없다 — 핵심인 connect-src는
+    'none' 그대로다. 다만 **서비스 워커 자신에게는 이 규칙이 걸리지 않는다.**
+    워커의 CSP는 sw.js를 내려줄 때의 HTTP 헤더로 정해지는데 Pages는 헤더를 못 붙인다.
+    그래서 sw.js를 작게 유지하고 자기 오리진 밖으로 나가지 않게 한다 (sw.js 머리말).
     frame-ancestors는 <meta>에서 동작하지 않아 뺐다 (헤더로만 걸린다).
   -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src data:; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data:; manifest-src 'self'; worker-src 'self'; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 
   <!--
     고른 테마를 첫 페인트 전에 정한다. 스크립트가 본문 끝에서 돌면
@@ -601,5 +611,7 @@
   <script src="markdown-sync.js"></script>
   <!-- store.js는 테마를 먼저 읽으려고 <head>에서 이미 불렀다 -->
   <script src="app.js"></script>
+  <!-- 오프라인에서도 열리게 한다. 이 한 줄을 지우면 설치 기능이 통째로 빠진다. -->
+  <script src="pwa.js"></script>
 </body>
 </html>

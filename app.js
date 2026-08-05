@@ -461,12 +461,22 @@
   /** 저장된 값이 없으면 OS를 물어본다. 화면에 칠하는 건 언제나 둘 중 하나다. */
   const activeTheme = () => Store.getTheme() ?? (prefersDark() ? 'dark' : 'light');
 
+  /**
+   * 설치한 창의 제목 표시줄 색. 매니페스트에도 `theme_color`가 있지만 그건 고정값이라
+   * 한쪽 테마에서 반드시 어긋난다. 게다가 이 앱의 테마는 OS와 따로 고를 수 있어
+   * `prefers-color-scheme` 미디어 쿼리로도 못 맞춘다 — 고른 값을 여기서 직접 넣는다.
+   * 값은 `--bg`와 같다. 다르면 창 테두리에 색 띠가 하나 생긴다.
+   */
+  const THEME_COLOR = { light: '#f6f6f7', dark: '#131316' };
+  const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+
   function renderTheme() {
     const dark = activeTheme() === 'dark';
 
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
     themeToggle.setAttribute('aria-checked', String(dark));
     themeToggle.classList.toggle('is-on', dark);
+    themeColorMeta?.setAttribute('content', THEME_COLOR[dark ? 'dark' : 'light']);
 
     // 빼놓은 창은 같은 스타일시트를 쓰지만 `:root`는 따로다. 같이 뒤집지 않으면
     // 저 창만 반대 색으로 남는다.
