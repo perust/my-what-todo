@@ -1843,6 +1843,29 @@ test('사라지는 버튼은 포커스를 자리를 이어받는 버튼에게 �
 
 // ── 문의하기 ────────────────────────────────────────────
 
+test('가장 긴 한글 문의도 mailto 주소가 2000자에 닿지 않는다', () => {
+  // 한 글자당 인코딩 길이가 제일 긴 것이 한글이다 (UTF-8 3바이트 → %XX%XX%XX, 9자).
+  // ASCII는 1~3자, 줄바꿈은 3자라 여기에 못 미친다.
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const maxOf = (id) => {
+    const tag = new RegExp(`<(?:input|textarea)\\b[^>]*\\bid="${id}"[^>]*>`).exec(html);
+    assert.ok(tag, `${id} 칸을 찾지 못했다`);
+    const found = /\bmaxlength="(\d+)"/.exec(tag[0]);
+    assert.ok(found, `${id}에 maxlength가 없다`);
+    return Number(found[1]);
+  };
+
+  const subject = maxOf('contact-subject');
+  const body = maxOf('contact-body');
+
+  // `mailto:`(7) + 주소(22자, app.js의 CONTACT_PARTS) + `?subject=`(9) + `&body=`(6)
+  const fixed = 7 + 22 + 9 + 6;
+  const worst = fixed + 9 * (subject + body);
+
+  // 2000자는 일부 메일 앱과 운영체제가 주소 뒤를 자르기 시작하는 자리다.
+  assert.ok(worst < 2000, `제목 ${subject}자 + 내용 ${body}자 → 최악 ${worst}자로 2000자를 넘는다`);
+});
+
 test('빈 문의는 토스트가 아니라 상자 안에서 막고, 실행 취소 5초를 뺏지 않는다', async () => {
   const app = loadApp();
   const dialog = app.document.getElementById('contact-dialog');

@@ -100,6 +100,7 @@
   const contactBody = document.getElementById('contact-body');
   const contactAddressNode = document.getElementById('contact-address');
   const contactError = document.getElementById('contact-error');
+  const contactLimit = document.getElementById('contact-limit');
 
   /** 프리셋 셋은 마크업에 박혀 있고 늘지도 줄지도 않는다. 매초 다시 찾을 이유가 없다. */
   const pomoPresets = document.querySelectorAll('.pomo-preset[data-minutes]');
@@ -2959,6 +2960,13 @@
 
   contactButton.addEventListener('click', () => {
     contactAddressNode.textContent = contactAddress();
+
+    // 몇 자까지인지는 `maxlength` 한 곳에만 적혀 있다. 문장에 숫자를 따로 박아두면
+    // 한쪽만 고쳤을 때 화면이 거짓말을 한다. 여기서 그 값을 읽어 문장을 만든다.
+    contactLimit.textContent =
+      `내용은 ${contactBody.maxLength}자까지 적을 수 있습니다. ` +
+      '더 긴 이야기는 열린 메일 앱에서 이어 쓰시면 됩니다.';
+
     showContactError('');
     if (!contactDialog.open) contactDialog.showModal();
   });

@@ -2225,6 +2225,14 @@ body.has-mini .toast {
   color: var(--text-dim);
 }
 
+/* 칸에 딸린 안내. `.contact-hint`와 달리 칸 바로 아래에 붙으므로 여백을 줄인다. */
+.contact-note {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 /* 카테고리 오류와 같은 모양이다. 색을 하나 더 들이지 않고 `--text`로 적고
    크기로 구분한다 — 색은 카테고리·우선순위·토마토까지다. */
 .contact-error {

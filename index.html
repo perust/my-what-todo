@@ -527,17 +527,27 @@
       적으신 내용으로 메일 앱이 열립니다. 이 앱이 직접 보내지는 않으니, 메일 앱에서 한 번 더 보내기를 눌러주세요.
     </p>
 
+    <!--
+      글자 수는 `mailto:` 주소 길이에서 나온다. 한글 한 글자가 UTF-8 3바이트라
+      인코딩하면 9자가 되므로, 주소 전체를 2000자 아래로 두려면 제목과 내용을 합쳐
+      217자까지다 (고정부 44자 + 9 × 217 = 1997). 40 + 160으로 나눠 여유를 남긴다.
+      2000자는 일부 메일 앱과 운영체제가 뒤를 자르기 시작하는 자리다.
+      **숫자를 화면 문구에 따로 적지 않는다** — app.js가 이 값을 읽어 문장을 만든다.
+    -->
     <div class="contact-field">
       <label class="contact-label" for="contact-subject">제목</label>
       <input id="contact-subject" class="contact-input" type="text" autocomplete="off"
-             maxlength="80" placeholder="무엇에 대한 문의인가요?">
+             maxlength="40" placeholder="무엇에 대한 문의인가요?">
     </div>
 
     <div class="contact-field">
       <label class="contact-label" for="contact-body">내용</label>
-      <textarea id="contact-body" class="contact-textarea" rows="5" maxlength="1200"
-                aria-describedby="contact-error"
+      <textarea id="contact-body" class="contact-textarea" rows="5" maxlength="160"
+                aria-describedby="contact-limit contact-error"
                 placeholder="어떤 일이 있었는지 적어주세요."></textarea>
+      <!-- 몇 자까지인지 미리 말한다. 말하지 않으면 maxlength가 조용히 입력을 멈춰,
+           키보드가 고장 난 것처럼 보인다. 글은 app.js가 maxlength에서 만든다. -->
+      <p id="contact-limit" class="contact-note"></p>
     </div>
 
     <!-- 이 상자는 모달이라 토스트가 뒤 배경 아래에 깔린다. 게다가 지운 항목의 5초가
