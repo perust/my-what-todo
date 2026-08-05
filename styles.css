@@ -9,6 +9,14 @@
   --bg: light-dark(#f6f6f7, #131316);
   --surface: light-dark(#ffffff, #1c1c20);
   --border: light-dark(#e4e4e7, #2e2e34);
+  /* **입력칸 테두리는 따로 둔다.** 위 `--border`는 카드와 구분선을 위한 값이라
+     배경과 1.2:1 남짓이다. 칸 안에 아직 아무것도 적히지 않았을 때 그 선이
+     "여기에 쓸 수 있다"고 말하는 유일한 표시인데, 그 대비로는 보이지 않는다.
+     글자가 아닌 그림·조작 요소에 요구되는 3:1을 네 배경(라이트 카드·바탕,
+     다크 카드·바탕) 모두에서 넘긴다 — 3.38 / 3.13 / 3.17 / 3.46.
+     테두리가 말하지 않아도 알아볼 수 있는 것(글자가 적힌 버튼, 카드, 구분선)은
+     그대로 `--border`를 쓴다. 여기까지 올리면 화면이 온통 선으로 덮인다. */
+  --field-border: light-dark(#8b8b92, #6a6a73);
   --text: light-dark(#18181b, #ececee);
   /* 이 색을 쓰는 자리가 전부 11~15px이라 큰 글자 예외에 들지 않고, 완료 처리한 할 일은
      제목 전체가 이 색이라 가장 많이 읽히는 글이 가장 흐렸다. 양쪽 다 WCAG AA(4.5:1)에
@@ -36,6 +44,18 @@
   --marker: 16px;
   --handle: 12px;
   --row-pad: 12px;
+  --row-pad-y: 10px;
+  /* 글자 치수를 여기 두는 이유는 **행 높이가 여기서 나오기 때문**이다.
+     body에만 적어두면 줄 높이를 고쳤을 때 연결선이 따라오지 않는다. */
+  --font-size: 15px;
+  --line-height: 1.5;
+  /* 할 일 한 줄의 높이. 연결선이 마지막 하위의 체크박스 한가운데서 멈추는
+     거리가 여기서 나온다 — 숫자를 따로 적어두면 행 패딩을 고쳤을 때 선만
+     제자리에 남아 마지막 하위를 지나쳐 내려간다.
+     = 제목 줄 + 제목 위아래 패딩(2px씩) + 행 위아래 패딩 + 구분선 */
+  --row-h: calc(
+    var(--font-size) * var(--line-height) + 4px + var(--row-pad-y) * 2 + 1px
+  );
 
   /* 연결선은 상위 체크박스의 **왼쪽 테두리**에 맞춘다. 중심에 그으면 선이 네모 한가운데를
      지나 반으로 갈라 보이고, 그만큼 오른쪽이라 하위의 우선순위 숫자를 뚫고 지나갔다.
@@ -70,7 +90,8 @@ body {
   padding: 32px 16px 96px;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  font: var(--font-size)/var(--line-height) system-ui, -apple-system,
+        "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
 }
 
 #app {
@@ -235,9 +256,12 @@ body {
   color: light-dark(#c8801a, #8e6a2e);
 }
 
+/* 꺼진 쪽 아이콘은 트랙 위에 그대로 얹힌다. 흐리게 두더라도 **어느 쪽이 무엇인지는
+   보여야 한다** — 달이 안 보이면 이 스위치가 다크 모드를 켜는 것인 줄 알 길이 없다.
+   라이트 3.28:1 / 다크 3.69:1로, 글자가 아닌 그림에 요구되는 3:1을 넘긴다. */
 .switch-moon {
   right: 6px;
-  color: light-dark(#b9bcc4, #2c3550);
+  color: light-dark(#8a8e97, #69749a);
 }
 
 .switch.is-on .switch-sun {
@@ -500,7 +524,7 @@ body {
 .pomo-input {
   width: 66px;
   padding: 5px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   border-radius: 7px;
   background: var(--bg);
   color: var(--text);
@@ -737,7 +761,7 @@ body {
 .pomo-set-input {
   width: 100%;
   padding: 5px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   border-radius: 7px;
   background: var(--bg);
   color: var(--text);
@@ -1149,6 +1173,8 @@ body.pip.is-waiting .pip-action {
   background: none;
   color: var(--text-dim);
   cursor: pointer;
+  /* 창 모서리에 붙어 있어 밖으로 그리면 잘린다. 안쪽에 붙인다. */
+  outline-offset: -1px;
 }
 
 .pip-mode:hover {
@@ -1203,11 +1229,15 @@ body.pip.is-waiting .pip-action {
   margin: 14px 0 8px;
 }
 
+/* 빈 쪽에도 잉크를 남긴다. 10%로는 배경에 묻혀 채워진 만큼만 보이고 **전체가
+   어디까지인지**가 안 보였다. 3:1까지 올리면 4px 막대가 통째로 찬 것처럼 보여
+   오히려 잘못 읽히므로, 자리를 알아볼 만큼만 올린다 — 정확한 수는 바로 옆
+   `.stats-text`가 글로 말한다. */
 .progress {
   flex: 1;
   height: 4px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--text) 10%, transparent);
+  background: color-mix(in srgb, var(--text) 22%, transparent);
   overflow: hidden;
 }
 
@@ -1241,7 +1271,7 @@ body.pip.is-waiting .pip-action {
 .add-button {
   height: 40px;
   padding: 0 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
@@ -1296,7 +1326,7 @@ body.pip.is-waiting .pip-action {
   width: 100%;
   height: 36px;
   padding: 0 34px 0 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
@@ -1560,7 +1590,7 @@ body.pip.is-waiting .pip-action {
   min-width: 0;
   height: 32px;
   padding: 0 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   border-radius: 8px;
   background: var(--bg);
   color: var(--text);
@@ -1729,7 +1759,7 @@ body.pip.is-waiting .pip-action {
   position: absolute;
   left: var(--line-x);
   top: 0;
-  bottom: 22px;
+  bottom: calc(var(--row-h) / 2);
   width: 1px;
   background: var(--border);
 }
@@ -1738,7 +1768,7 @@ body.pip.is-waiting .pip-action {
   display: flex;
   align-items: center;
   gap: var(--gap);
-  padding: 10px var(--row-pad);
+  padding: var(--row-pad-y) var(--row-pad);
   border-top: 1px solid var(--border);
 }
 
@@ -2453,7 +2483,7 @@ body.has-mini .toast {
 .contact-textarea {
   display: block;
   width: 100%;
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   border-radius: 8px;
   background: var(--surface);
   color: var(--text);
@@ -2613,8 +2643,7 @@ body.has-mini .toast {
     gap: 4px;
   }
 
-  .pomo-custom,
-  .pomo-presets {
+  .pomo-custom {
     flex: 1 1 auto;
   }
 

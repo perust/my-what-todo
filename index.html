@@ -69,7 +69,8 @@
         <!-- 아직 로그인할 대상이 없다. 나중에 붙일 자리를 먼저 잡아둔 것이고,
              지금 누르면 무엇이 준비 중인지 알린다. 자리만 비워두면 그 사이에
              다른 것이 들어와 나중에 옮기게 된다. -->
-        <button type="button" id="login-button" class="login-button">로그인</button>
+        <button type="button" id="login-button" class="login-button"
+                aria-haspopup="dialog">로그인</button>
 
         <span id="remaining-badge" class="remaining" aria-live="polite"></span>
 
@@ -185,7 +186,10 @@
                  글자가 읽히지 않는다 (store.js의 MINI_OPACITY_MIN과 같은 값이다). -->
             <input id="pomo-veil" class="pomo-veil" type="range"
                    min="55" max="100" step="1" value="82">
-            <output id="pomo-veil-value" class="pomo-veil-value" for="pomo-veil"></output>
+            <!-- 값은 손잡이가 이미 읽어준다. <output>은 그 자체로 읽어주는 자리라
+                 그대로 두면 같은 값을 두 번 말한다. 눈으로 보는 쪽만 맡긴다. -->
+            <output id="pomo-veil-value" class="pomo-veil-value" for="pomo-veil"
+                    aria-hidden="true"></output>
           </div>
 
           <div class="pomo-set-foot">
@@ -290,7 +294,8 @@
       <button type="button" id="file-connect" class="footer-button">파일 연결</button>
       <button type="button" id="export-data" class="footer-button">내보내기</button>
       <button type="button" id="import-data" class="footer-button">가져오기</button>
-      <button type="button" id="contact-button" class="footer-button">문의하기</button>
+      <button type="button" id="contact-button" class="footer-button"
+              aria-haspopup="dialog">문의하기</button>
       <input type="file" id="import-file" accept="application/json,.json" hidden>
     </footer>
   </main>

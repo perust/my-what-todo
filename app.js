@@ -1420,6 +1420,9 @@
     if (renamingCategory !== null) return;
 
     const list = Store.getCategories();
+    // 카테고리마다 세면 그때마다 항목 배열을 통째로 훑는다. 상한이 64라 그 곱만큼
+    // 커진다 — 한 번에 세어 받아둔다.
+    const counts = Store.getCategoryCounts();
     catList.textContent = '';
 
     for (const cat of list) {
@@ -1436,13 +1439,12 @@
       name.setAttribute('aria-label', `카테고리 이름 바꾸기: ${cat.name}`);
 
       const count = el('span', 'cat-count');
-      const used = Store.countInCategory(cat.id);
+      const used = counts.get(cat.id) ?? 0;
       count.textContent = used ? `${used}개` : '비어 있음';
 
       li.append(dot, name, count);
 
       if (pendingCategoryRemove === cat.id) {
-        li.classList.add('is-confirming');
         li.appendChild(renderRemoveConfirm(cat, used, list));
       } else {
         const remove = el('button', 'cat-remove');
@@ -1960,7 +1962,6 @@
 
     categoryCache = Store.getCategories();
     sortSelect.value = Store.getSort();
-    list.classList.toggle('is-manual', Store.getSort() === 'manual');
 
     renderCategorySelect();
     renderCategoryPanel();
@@ -2094,9 +2095,9 @@
 
   /** 지금 버튼이 눌려 있는지. 편집을 언제 끝내 그려도 되는지 판단하는 데만 쓴다. */
   let pressing = false;
+  const POINTER_END = ['pointerup', 'pointercancel'];
   addEventListener('pointerdown', () => { pressing = true; }, true);
-  addEventListener('pointerup', () => { pressing = false; }, true);
-  addEventListener('pointercancel', () => { pressing = false; }, true);
+  for (const end of POINTER_END) addEventListener(end, () => { pressing = false; }, true);
 
   /**
    * 편집기가 포커스를 잃어 편집이 끝난 뒤 목록을 다시 그린다. **그 자리에서 그리지 않는다.**
@@ -2111,8 +2112,17 @@
    */
   function renderAfterPress() {
     const draw = () => setTimeout(() => render(), 0);
-    if (pressing) addEventListener('pointerup', draw, { once: true, capture: true });
-    else draw();
+    if (!pressing) { draw(); return; }
+
+    // **손을 떼는 길이 둘이다.** 스크롤이나 컨텍스트 메뉴가 제스처를 가로채면
+    // pointerup 없이 pointercancel만 온다. pointerup만 기다리면 다시 그리는 일이
+    // 그 자리에서 밀려, 편집을 마친 줄이 옛 제목을 단 채 남았다가 한참 뒤
+    // 엉뚱한 클릭에 딸려 갱신된다. 둘 중 먼저 오는 것으로 끝내고 나머지는 거둔다.
+    const done = () => {
+      for (const end of POINTER_END) removeEventListener(end, done, true);
+      draw();
+    };
+    for (const end of POINTER_END) addEventListener(end, done, true);
   }
 
   function startEdit(id) {

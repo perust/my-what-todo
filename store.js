@@ -96,9 +96,16 @@
    */
   const MINI_OPACITY_MIN = 55;
 
+  /**
+   * 범위 밖 값은 **가장 가까운 자리로 옮긴다.** 기본값으로 되돌리면 옅게 보고 싶어서
+   * 낮춰둔 사람의 뜻이 통째로 지워진다 — 하한을 새로 두었을 때 23을 골라둔 값이
+   * 82로 튀어 올랐다. 읽히지 않는 것만 막고 뜻은 최대한 지킨다.
+   * 읽어낼 수조차 없는 값일 때만 기본값으로 간다.
+   */
   const normalizeMiniOpacity = (value) => {
     const n = Math.round(Number(value));
-    return Number.isFinite(n) && n >= MINI_OPACITY_MIN && n <= 100 ? n : MINI_OPACITY_DEFAULT;
+    if (!Number.isFinite(n)) return MINI_OPACITY_DEFAULT;
+    return Math.min(100, Math.max(MINI_OPACITY_MIN, n));
   };
 
   /**
@@ -866,8 +873,13 @@
       }
       if (!parsed || typeof parsed !== 'object') return null;
 
-      const { length, left } = parsed;
-      if (!Number.isFinite(length) || !Number.isFinite(left)) return null;
+      // **초는 정수로 못박는다.** 회차는 정수를 요구하면서 여기만 숫자면 받아주면,
+      // 손으로 고친 1500.6이 그대로 들어와 남은 초가 매 초 다른 자리에서 반올림된다.
+      // 같은 화면이 24:59와 25:00 사이를 오간다. 읽어낼 수 있는지를 먼저 보고 다듬는다.
+      if (!Number.isFinite(parsed.length) || !Number.isFinite(parsed.left)) return null;
+      const length = Math.round(parsed.length);
+      // Math.round(-0.4)는 -0이다. 여기서 뜻이 없는 값이라 0으로 맞춰둔다.
+      const left = Math.round(parsed.left) || 0;
       if (length < POMO_MIN_MINUTES * 60 || length > POMO_MAX_MINUTES * 60) return null;
       if (left < 0 || left > length) return null;
 
@@ -1184,6 +1196,18 @@
       return todos.filter((t) => t.category === id).length;
     },
 
+    /**
+     * 카테고리 id마다 항목 수. 목록을 그릴 때처럼 **여러 개를 한꺼번에 물을 때** 쓴다.
+     * `countInCategory`를 카테고리마다 부르면 그때마다 배열 전체를 훑어 O(64n)이 된다 —
+     * 상한이 64라 그 곱이 얼마나 커지는지가 데이터에 달려 있다. 여기선 한 번만 훑는다.
+     * 비어 있는 카테고리는 키가 없으므로 `?? 0`으로 읽는다.
+     */
+    getCategoryCounts() {
+      const counts = new Map();
+      for (const item of todos) counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
+      return counts;
+    },
+
     addCategory(name) {
       const label = normalizeCategoryName(name);
       if (!label || label.length > MAX_CATEGORY_NAME) return null;
@@ -1372,8 +1396,19 @@
         const revivedAt = new Map(revived.map((item, at) => [item.id, at]));
         const currentAt = new Map(todos.map((item, at) => [item.id, at]));
         const affected = new Set(revived.map((item) => item.parentId));
-        for (const parentId of affected) {
-          const group = todos.filter((item) => item.parentId === parentId);
+
+        // 형제 그룹은 **한 번만 훑어서** 모은다. 부모마다 배열 전체를 걸러내면
+        // 되살릴 것이 많을수록 O(n²)이 된다 — 완료 항목 일괄 삭제를 되돌릴 때는
+        // 지운 것이 곧 되살릴 것이라 부모 수가 항목 수만큼 늘어난다.
+        const groups = new Map();
+        for (const item of todos) {
+          if (!affected.has(item.parentId)) continue;
+          const bucket = groups.get(item.parentId);
+          if (bucket) bucket.push(item);
+          else groups.set(item.parentId, [item]);
+        }
+
+        for (const group of groups.values()) {
           group.sort((a, b) => {
             const byOrder = a.order - b.order;
             if (byOrder) return byOrder;

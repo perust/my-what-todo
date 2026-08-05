@@ -380,12 +380,12 @@ test('화면 설정은 가져오기와 로드에서 같은 자리에서 정규�
     assert.ok(Store.importData(baseData({ miniOpacity: value, pipDial: value })), label);
 
     const opacity = Store.getMiniOpacity();
-    assert.ok(Number.isInteger(opacity) && opacity >= 0 && opacity <= 100,
-      `${label} → 0~100 정수여야 하는데 ${opacity}`);
+    assert.ok(Number.isInteger(opacity) && opacity >= Store.MINI_OPACITY_MIN && opacity <= 100,
+      `${label} → ${Store.MINI_OPACITY_MIN}~100 정수여야 하는데 ${opacity}`);
     assert.equal(typeof Store.getPipDial(), 'boolean', `${label} → 참/거짓`);
   }
 
-  // 읽을 수가 없는 값은 기본값으로 떨어진다
+  // 읽어낼 수조차 없는 값만 기본값으로 떨어진다
   for (const value of [Number.NaN, undefined, { v: 50 }, 'nope']) {
     const { Store } = loadStore({ context: true });
     assert.ok(Store.importData(baseData({ miniOpacity: value, pipDial: value })));
@@ -400,12 +400,17 @@ test('화면 설정은 가져오기와 로드에서 같은 자리에서 정규�
   assert.equal(lenient.Store.getMiniOpacity(), 70);
   assert.equal(lenient.Store.getPipDial(), true, "'false'는 참도 거짓도 아니다");
 
-  // **하한 아래는 받지 않는다.** 그보다 옅으면 할 일 카드 위에 겹쳤을 때 글자가
-  // 읽히지 않는다 — 읽히는 선 밖의 값을 저장할 수 있게 두면 안 된다.
+  // **하한 아래는 받지 않되, 가장 가까운 자리로 옮긴다.** 그보다 옅으면 할 일 카드
+  // 위에 겹쳤을 때 글자가 읽히지 않는다. 그렇다고 기본값으로 되돌리면 옅게 보려고
+  // 낮춰둔 뜻이 통째로 지워진다 — 하한을 새로 둔 날 23으로 맞춰둔 값이 82로 튀어
+  // 올랐다. 읽히지 않는 것만 막고 뜻은 최대한 지킨다.
   const floor = loadStore({ context: true });
   const min = floor.Store.MINI_OPACITY_MIN;
-  assert.ok(floor.Store.importData(baseData({ miniOpacity: min - 1 })));
-  assert.equal(floor.Store.getMiniOpacity(), floor.Store.MINI_OPACITY_DEFAULT);
+  for (const [given, want] of [[min - 1, min], [23, min], [0, min], [101, 100], [1e9, 100]]) {
+    const one = loadStore({ context: true });
+    assert.ok(one.Store.importData(baseData({ miniOpacity: given })));
+    assert.equal(one.Store.getMiniOpacity(), want, `${given} → ${want}이어야 한다`);
+  }
   assert.ok(floor.Store.importData(baseData({ miniOpacity: min })));
   assert.equal(floor.Store.getMiniOpacity(), min, '하한 자체는 받아야 한다');
 
@@ -2891,6 +2896,80 @@ test('loadRun은 사이클이 아닌 기록과 망가진 next를 버린다', () 
   // 알 수 없는 구간 이름은 집중으로 읽는다. loadRun의 phase와 같은 태도다.
   assert.deepEqual(plain(read({ ...base, round: 1, next: { round: 0, phase: 'nope' } }).next),
     { round: 0, phase: 'focus' });
+});
+
+test('loadRun의 초는 정수로 못박힌다', () => {
+  const { Store, sessionStorage } = loadStore({ context: true });
+  const read = (run) => {
+    sessionStorage.setItem('daily-todo:v1:run', JSON.stringify(run));
+    return Store.loadRun();
+  };
+
+  // 회차는 정수를 요구하면서 초만 숫자면 받아주면, 손으로 고친 값이 그대로 들어와
+  // 남은 초가 자리마다 다르게 반올림된다. 같은 화면이 24:59와 25:00을 오간다.
+  const run = read({ endsAt: null, left: 299.6, length: 1500.4, phase: 'focus', round: 0 });
+  assert.equal(run.left, 300);
+  assert.equal(run.length, 1500);
+
+  // 다듬는 것은 **읽어낼 수 있는지를 본 다음**이다. 문자열까지 받아주면 안 된다.
+  assert.equal(read({ endsAt: null, left: '300', length: '1500', phase: 'focus', round: 0 }), null);
+
+  // 다듬은 뒤에도 범위는 그대로 본다.
+  assert.equal(read({ endsAt: null, left: -0.4, length: 1500, phase: 'focus', round: 0 }).left, 0);
+  assert.equal(read({ endsAt: null, left: 1500.6, length: 1500.4, phase: 'focus', round: 0 }), null);
+});
+
+test('여러 부모에 걸친 되살리기가 형제 순서를 그대로 지킨다', () => {
+  // 완료 항목을 한꺼번에 지우면 지운 것마다 부모가 다를 수 있다. 부모 수만큼
+  // 배열 전체를 훑던 자리를 한 번만 훑도록 바꿨다 — 결과가 같아야 한다.
+  const { Store } = loadStore({ context: true });
+  const item = (title, extra = {}) => ({ title, priority: 1, tags: [], ...extra });
+  const parents = [];
+  for (let p = 0; p < 12; p += 1) {
+    const parent = Store.add(item(`상위 ${p}`), 'work');
+    parents.push(parent);
+    for (let c = 0; c < 3; c += 1) Store.addChild(parent.id, item(`하위 ${p}-${c}`));
+  }
+
+  const shape = () => Store.getRoots().map((root) =>
+    `${root.title}:${Store.getChildren(root.id).map((c) => c.title).join(',')}`);
+  const before = shape();
+
+  // 부모마다 가운데 하위 하나씩을 지운다 — 부모 12곳이 한꺼번에 흔들린다.
+  const removed = [];
+  for (const parent of parents) {
+    removed.push(...Store.remove(Store.getChildren(parent.id)[1].id));
+  }
+
+  assert.equal(removed.length, 12);
+  assert.ok(Store.restore(removed));
+  assert.deepEqual(plain(shape()), plain(before), '되살린 뒤 순서가 지우기 전과 같아야 한다');
+
+  // order는 형제 그룹마다 0부터 빈틈없이 이어져야 한다. 다음 load()에서 순서가
+  // 달라지지 않는 유일한 보장이다.
+  for (const parent of parents) {
+    assert.deepEqual(plain(Store.getChildren(parent.id).map((c) => c.order)), [0, 1, 2]);
+  }
+});
+
+test('카테고리 개수는 한 번에 세도 하나씩 세는 것과 같다', () => {
+  const { Store } = loadStore({ context: true });
+  const extra = Store.addCategory('메모');
+  Store.addCategory('빈칸');
+
+  const item = (title) => ({ title, priority: 1, tags: [] });
+  Store.add(item('가'), 'work');
+  const parent = Store.add(item('나'), extra.id);
+  Store.addChild(parent.id, item('나의 하위'));
+  Store.add(item('다'), 'personal');
+
+  const counts = Store.getCategoryCounts();
+  for (const cat of Store.getCategories()) {
+    assert.equal(counts.get(cat.id) ?? 0, Store.countInCategory(cat.id), cat.name);
+  }
+  // 하위도 함께 센다. 비어 있는 카테고리는 키가 없으므로 0으로 읽어야 한다.
+  assert.equal(counts.get(extra.id), 2);
+  assert.equal(counts.get(Store.getCategories().find((c) => c.name === '빈칸').id), undefined);
 });
 
 (async () => {
