@@ -1827,6 +1827,12 @@
       renderPriority(item, context),
       check,
       title,
+      // **제목 바로 뒤다.** 태그·카테고리보다 앞에 세운다 — 언제까지인가는 무엇으로
+      // 묶여 있는가보다 먼저 읽힌다. 그리고 뒤로 보내면 하나 더 잃는다: `+`·`⋯`·`×`가
+      // 이어 서 있어야 하는데 그 사이에 끼어 조작 버튼 무리가 갈라진다.
+      // `+`는 눌리기 전까지 투명하게만 숨으므로 자리는 그대로 차지해, 갈라진 자리가
+      // 이유 없는 빈칸으로 보였다.
+      ...(item.dueAt === null ? [] : [renderDue(item)]),
       renderTags(item, context)
     );
 
@@ -1865,20 +1871,6 @@
       }
     }
 
-    // 마감은 상위·하위 어디에나 붙는다. 하위만 따로 마감이 있는 일이 흔하다.
-    if (item.dueAt !== null) {
-      const due = el('span', 'todo-due');
-      due.textContent = formatDue(item.dueAt);
-      if (overdue(item)) {
-        due.classList.add('is-overdue');
-        // 색만으로 알리지 않는다. 읽어주는 쪽에도 같은 말이 가야 한다.
-        due.setAttribute('aria-label', `마감 지남: ${formatDue(item.dueAt)}`);
-      } else {
-        due.setAttribute('aria-label', `마감: ${formatDue(item.dueAt)}`);
-      }
-      row.appendChild(due);
-    }
-
     if (!context) {
       const detail = el('button', 'todo-detail');
       detail.type = 'button';
@@ -1897,6 +1889,20 @@
     }
 
     return row;
+  }
+
+  /** 마감 배지. 상위·하위 어디에나 붙는다 — 하위만 따로 마감이 있는 일이 흔하다. */
+  function renderDue(item) {
+    const due = el('span', 'todo-due');
+    due.textContent = formatDue(item.dueAt);
+    // 색만으로 알리지 않는다. 읽어주는 쪽에도 같은 말이 가야 한다.
+    if (overdue(item)) {
+      due.classList.add('is-overdue');
+      due.setAttribute('aria-label', `마감 지남: ${formatDue(item.dueAt)}`);
+    } else {
+      due.setAttribute('aria-label', `마감: ${formatDue(item.dueAt)}`);
+    }
+    return due;
   }
 
   /** 하위 입력창. 자식 목록의 맨 끝에 놓여 상위 바로 아래에서 연속 입력을 받는다. */

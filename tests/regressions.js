@@ -3142,6 +3142,37 @@ test('시각을 비우면 그날 끝이 되고, 덜 친 날짜는 마감을 지�
   assert.equal(hooks.readDueFields(date, time), undefined);
 });
 
+test('행에서 조작 버튼 셋은 이어 서고, 마감은 배지 중 제목에 가장 가깝다', () => {
+  const app = appWithItems();
+  const hooks = app.sandbox.__appTest;
+  app.Store.add({ title: '가', priority: 1, tags: ['세금'], dueAt: 1786000020000 }, 'work');
+  hooks.render();
+
+  const row = app.document.getElementById('todo-list').querySelectorAll('.todo')[0];
+  const name = (node) => {
+    if (node.classList.contains('todo-title')) return '제목';
+    if (node.classList.contains('todo-due')) return '마감';
+    if (node.classList.contains('tags')) return '태그';
+    if (node.classList.contains('badge')) return '카테고리';
+    return node.dataset.action ?? '';
+  };
+  const order = [...row.childNodes].map(name).filter(Boolean);
+
+  // **마감은 제목 바로 뒤다.** 언제까지인가는 무엇으로 묶여 있는가보다 먼저 읽힌다.
+  assert.equal(order.indexOf('마감'), order.indexOf('제목') + 1);
+  assert.ok(order.indexOf('마감') < order.indexOf('카테고리'));
+
+  // **조작 버튼 셋 사이에 아무것도 끼지 않는다.** `+`는 눌리기 전까지 투명하게만
+  // 숨어 자리는 그대로 차지하므로, 사이에 배지가 끼면 이유 없는 빈칸으로 보인다.
+  // 실제로 마감 배지를 그 사이에 넣었다가 그 자리가 떠 보였다.
+  const buttons = ['add-child', 'detail', 'delete'];
+  const at = buttons.map((action) => order.indexOf(action));
+  assert.ok(at.every((i) => i !== -1), `조작 버튼이 다 있어야 한다: ${order.join(' ')}`);
+  assert.deepEqual(plain(at), plain([at[0], at[0] + 1, at[0] + 2]),
+    `조작 버튼 사이에 낀 것이 있다: ${order.join(' ')}`);
+  assert.equal(at[2], order.length - 1, '조작 버튼이 행 끝에 선다');
+});
+
 test('추가 폼의 자세히는 같은 대화상자를 쓰고, 정한 마감이 새 항목에 실린다', () => {
   const app = appWithItems();
   const hooks = app.sandbox.__appTest;
