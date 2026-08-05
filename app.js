@@ -974,13 +974,16 @@
    * 못 보는 사람에게는 아무것도 남지 않고, 음성으로 조작하는 사람은 부를 말을 잃는다.
    */
   const PIP_ICONS = {
-    // 시작·계속·다시 시작
-    play: 'M8 5.2v13.6L19 12z',
-    // 일시정지
-    pause: 'M9 5.5v13M15 5.5v13',
+    // 시작·계속·다시 시작.
+    //
+    // **눈금 안에 들어가는 버튼이라 그림이 칸을 꽉 채워야 한다.** 작게 그리면 버튼
+    // 지름의 3분의 1도 안 차서, 테두리 동그라미만 보이고 가운데는 비어 보인다.
+    play: 'M7 4.5v15L20 12z',
+    // 일시정지. 선이 얇으면 같은 이유로 사라진다 — 채우는 모양과 같은 무게로 굵게 긋는다.
+    pause: 'M9 4.5v15M15 4.5v15',
     // 다음 구간으로. 이어가는 것과 멈춘 것을 다시 미는 것은 다른 일이라 모양을 가른다.
     // 뒤의 막대도 **면적으로** 그린다 — 선으로 두면 채우는 모양 안에서 넓이가 0이라 사라진다.
-    next: 'M7 5.2v13.6L16 12zM17.6 5.2h2.2v13.6h-2.2z',
+    next: 'M6 4.5v15L17 12zM18.6 4.5h2.6v15h-2.6z',
     // 원형 시계로 보기
     dial: 'M12 4.6a7.4 7.4 0 1 1 0 14.8 7.4 7.4 0 0 1 0-14.8ZM12 8.4V12l2.5 1.5',
     // 숫자만 보기
@@ -1004,7 +1007,9 @@
     path.setAttribute('fill', filled ? 'currentColor' : 'none');
     path.setAttribute('stroke', filled ? 'none' : 'currentColor');
     if (!filled) {
-      path.setAttribute('stroke-width', '2');
+      // 멈추기(‖)는 채우는 모양들과 나란히 서므로 그만큼 굵게 긋는다.
+      // 나머지(보기 방식 아이콘)는 작게 쓰이는 그림이라 얇게 둔다.
+      path.setAttribute('stroke-width', shape === PIP_ICONS.pause ? '3.4' : '2');
       path.setAttribute('stroke-linecap', 'round');
       path.setAttribute('stroke-linejoin', 'round');
     }
