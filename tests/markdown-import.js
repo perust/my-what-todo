@@ -19,13 +19,14 @@ function load() {
 
 function snapshot(overrides = {}) {
   return {
-    version: 4,
+    version: 5,
     theme: 'dark',
     sort: 'manual',
     pomodoro: [
       { focus: 25, rest: 5 }, { focus: 30, rest: 6 },
       { focus: 35, rest: 7 }, { focus: 40, rest: 20 }
     ],
+    miniOpacity: 82,
     categories: [
       { id: 'work', name: '업무', hue: 220 },
       { id: 'personal', name: '개인', hue: 140 }

@@ -9,7 +9,8 @@
 
   const STORAGE_KEY = 'daily-todo:v1';
   const CORRUPTED_KEY = 'daily-todo:v1:corrupted';
-  const SCHEMA_VERSION = 4;
+  /** 5에서 미니 타이머 불투명도(miniOpacity)가 늘었다. 키는 그대로 두고 이 숫자만 올린다. */
+  const SCHEMA_VERSION = 5;
   const MAX_TITLE = 100;
   const MAX_CATEGORY_NAME = 12;
 
@@ -74,6 +75,20 @@
     return out;
   }
 
+  /**
+   * 미니 타이머 바탕이 얼마나 진한가(%). 100이면 불투명하고 0이면 바탕 없이 글자만 뜬다.
+   *
+   * **글자에는 걸지 않는다.** 통째로 흐리게 하면 대비가 그만큼 떨어지고, 얼마나 떨어졌는지는
+   * 계산해보기 전에는 보이지 않는다 — 흐린 회색 글자는 0%에서 3.5:1까지 내려가 AA에 못 미친다.
+   * 바탕과 테두리만 옅어지므로 어느 값에서도 글자는 그대로 읽힌다.
+   */
+  const MINI_OPACITY_DEFAULT = 82;
+
+  const normalizeMiniOpacity = (value) => {
+    const n = Math.round(Number(value));
+    return Number.isFinite(n) && n >= 0 && n <= 100 ? n : MINI_OPACITY_DEFAULT;
+  };
+
   /** 처음 열었을 때 주어지는 세 가지. 이후로는 사용자가 늘리고 줄인다. */
   const DEFAULT_CATEGORIES = [
     { id: 'work', name: '업무', hue: 221 },
@@ -98,6 +113,8 @@
    * 돌아가는 상태는 이 블롭에 넣지 않는다 — saveRun/loadRun이 따로 맡는다.
    */
   let pomodoro = defaultPomodoro();
+  /** 미니 타이머 바탕의 진하기(%). 테마와 같은 성격의 화면 설정이라 여기 함께 담는다. */
+  let miniOpacity = MINI_OPACITY_DEFAULT;
   let corrupted = false;
 
   /** 마지막으로 읽거나 쓴 저장본의 판 번호. 다른 탭이 쓰면 여기서 벌어진다. */
@@ -385,6 +402,7 @@
     theme = validTheme(parsed?.theme);
     sort = SORTS.includes(parsed?.sort) ? parsed.sort : 'priority';
     pomodoro = normalizePomodoro(parsed?.pomodoro);
+    miniOpacity = normalizeMiniOpacity(parsed?.miniOpacity);
 
     // 카테고리를 먼저 세운다. 항목 검증이 이 목록을 기준으로 돌아간다.
     categories = normalizeCategories(parsed?.categories);
@@ -615,6 +633,7 @@
           theme,
           sort,
           pomodoro,
+          miniOpacity,
           categories,
           todos
         })
@@ -653,6 +672,7 @@
     const themeSnapshot = theme;
     const sortSnapshot = sort;
     const pomoSnapshot = pomodoro.map((r) => ({ ...r }));
+    const miniSnapshot = miniOpacity;
     const originals = new Map(todos.map((t) => [t.id, t]));
     let result;
 
@@ -662,6 +682,7 @@
       theme = themeSnapshot;
       sort = sortSnapshot;
       pomodoro = pomoSnapshot;
+      miniOpacity = miniSnapshot;
     };
 
     try {
@@ -875,6 +896,25 @@
       });
     },
 
+    MINI_OPACITY_DEFAULT,
+
+    /** 미니 타이머 바탕의 진하기(%). 0이면 바탕 없이 글자만 뜬다. */
+    getMiniOpacity() {
+      return miniOpacity;
+    },
+
+    /**
+     * 끌고 있는 동안 부르지 않는다. 한 번 끌 때마다 판 번호가 수십 번 올라가고,
+     * 그때마다 다른 탭이 통째로 다시 읽는다 (F-20). 손을 뗄 때 한 번만 부른다.
+     */
+    setMiniOpacity(value) {
+      const next = normalizeMiniOpacity(value);
+      return commit(() => {
+        miniOpacity = next;
+        return next;
+      });
+    },
+
     setSort(next) {
       if (!SORTS.includes(next)) return null;
       return commit(() => {
@@ -917,6 +957,7 @@
         theme,
         sort,
         pomodoro: pomodoro.map((round) => ({ ...round })),
+        miniOpacity,
         categories: categories.map((c) => ({ ...c })),
         todos: todos.map(clone)
       };
@@ -939,7 +980,8 @@
         categories,
         theme,
         sort,
-        pomodoro: pomodoro.map((r) => ({ ...r }))
+        pomodoro: pomodoro.map((r) => ({ ...r })),
+        miniOpacity
       };
       adopt(raw);
 
@@ -955,6 +997,7 @@
         theme = snapshot.theme;
         sort = snapshot.sort;
         pomodoro = snapshot.pomodoro;
+        miniOpacity = snapshot.miniOpacity;
         invalidate();
       }
       return result;
@@ -995,6 +1038,7 @@
       theme = null;
       sort = 'priority';
       pomodoro = defaultPomodoro();
+      miniOpacity = MINI_OPACITY_DEFAULT;
 
       const raw = readRaw();
       if (!raw) return todos;

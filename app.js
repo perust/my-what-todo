@@ -86,6 +86,8 @@
   const pomoSettings = document.getElementById('pomo-settings');
   const pomoSetRows = document.getElementById('pomo-set-rows');
   const pomoSetDefault = document.getElementById('pomo-set-default');
+  const pomoVeil = document.getElementById('pomo-veil');
+  const pomoVeilValue = document.getElementById('pomo-veil-value');
   const pomoNext = document.getElementById('pomo-next');
   const pomoPip = document.getElementById('pomo-pip');
   const pomoMini = document.getElementById('pomo-mini');
@@ -835,15 +837,16 @@
     pomoPip.classList.toggle('is-active', popped);
     setAttr(pomoPip, 'aria-label', popped ? '타이머 창 닫기' : '타이머를 창으로 빼기');
 
-    // 흐른 만큼 원이 채워진다
+    // 흐른 만큼 원이 채워진다. 빼놓은 창의 시계도 같은 값을 쓴다.
     const done = pomoLength > 0 ? 1 - pomoLeft / pomoLength : 0;
-    pomoDialFill.style.strokeDashoffset = String(DIAL_LENGTH * (1 - done));
+    const offset = String(DIAL_LENGTH * (1 - done));
+    pomoDialFill.style.strokeDashoffset = offset;
     setText(pomoDialTime, clock);
     setText(pomoDialPhase, label || `${Math.round(pomoLength / 60)}분`);
     renderDots();
 
     renderMini(clock, label);
-    renderPip(clock, label);
+    renderPip(clock, label, offset);
 
     // 상태가 바뀐 자리마다 부르지 않는다. 어차피 전부 여기를 지나므로 여기서 한 번만 본다.
     savePomoRun();
@@ -855,6 +858,19 @@
 
   /** ×로 거둔 뒤에는 다시 뜨지 않는다. 패널을 다시 열면 그 뜻을 거둔 것으로 본다. */
   let miniDismissed = false;
+
+  /**
+   * 바탕의 진하기를 화면에 옮긴다. **저장하지는 않는다** — 끄는 동안 매 순간 저장하면
+   * 판 번호가 수십 번 올라가 다른 탭이 그때마다 통째로 다시 읽는다 (F-20).
+   *
+   * 값은 CSSOM으로 넣는다. `style=` 속성을 마크업에 두지 않기로 한 것과 어긋나지 않고,
+   * CSP도 이 길은 막지 않는다.
+   */
+  function paintMiniVeil(percent) {
+    pomoMini.style.setProperty('--mini-veil', `${percent}%`);
+    setText(pomoVeilValue, `${percent}%`);
+    if (pomoVeil.value !== String(percent)) pomoVeil.value = String(percent);
+  }
 
   /**
    * 한 판이 걸려 있는가. 시작한 적이 없거나 초기화한 직후에는 아니다.
@@ -895,9 +911,46 @@
   let pipTime = null;
   let pipPhase = null;
   let pipAction = null;
+  let pipFill = null;
   let pipTick = null;
   /** 창이 열리기를 기다리는 중인가. 이 사이에 한 번 더 누르면 두 번째가 거절당한다. */
   let pipOpening = false;
+
+  /**
+   * 저 창에 세울 원형 시계를 만든다. `index.html`의 눈금과 같은 모양이지만,
+   * 마크업을 베끼지 않고 여기서 세운다 — 베끼면 두 벌이 되어 한쪽만 고치게 된다.
+   * 클래스 이름을 그대로 쓰므로 색과 굵기, 1초 전환은 `styles.css` 한 곳에서 온다.
+   *
+   * SVG는 `createElement`로 만들 수 없다. 이름공간이 달라 그렇게 만든 요소는
+   * 화면에 아무것도 그리지 않는다. `el()`을 쓰지 않는 이유다.
+   */
+  function buildDial() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+
+    const track = document.createElementNS(NS, 'circle');
+    pipFill = document.createElementNS(NS, 'circle');
+
+    for (const circle of [track, pipFill]) {
+      circle.setAttribute('cx', '50');
+      circle.setAttribute('cy', '50');
+      circle.setAttribute('r', '44');
+      circle.setAttribute('fill', 'none');
+      circle.setAttribute('stroke-width', '8');
+    }
+    track.setAttribute('class', 'pomo-dial-track');
+    pipFill.setAttribute('class', 'pomo-dial-fill');
+    pipFill.setAttribute('stroke-linecap', 'round');
+    // 12시에서 시작해 시계 방향으로 채운다
+    pipFill.setAttribute('transform', 'rotate(-90 50 50)');
+    pipFill.style.strokeDasharray = String(DIAL_LENGTH);
+
+    svg.append(track, pipFill);
+    return svg;
+  }
 
   /**
    * 별도 창을 연다. 이 창은 다른 창 위에 계속 떠 있어서 브라우저를 최소화해도 남는다 —
@@ -912,7 +965,7 @@
     pipOpening = true;
     let win;
     try {
-      win = await documentPictureInPicture.requestWindow({ width: 236, height: 176 });
+      win = await documentPictureInPicture.requestWindow({ width: 208, height: 248 });
     } catch (e) {
       showNotice('창을 열지 못했습니다. 잠시 뒤에 다시 눌러주세요.');
       return;
@@ -944,8 +997,16 @@
     pipAction.type = 'button';
     pipAction.addEventListener('click', pomoAct);
 
+    // 숫자만으로는 얼마나 왔는지가 읽히지 않는다. 패널의 펼친 시계와 **같은 클래스**를
+    // 쓰므로 색도 1초 전환도 그대로 따라온다 — 크기만 저 창에 맞춰 줄인다.
+    const label = el('div', 'pomo-dial-label');
+    label.append(pipTime, pipPhase);
+
+    const face = el('div', 'pomo-dial-face');
+    face.append(buildDial(), label);
+
     const box = el('div', 'pip-box');
-    box.append(pipPhase, pipTime, pipAction);
+    box.append(face, pipAction);
     // 본 문서에서 만든 노드도 붙이는 순간 저 창의 것이 된다. 붙은 뒤에도
     // 이벤트 리스너는 그대로 살아 있어 여기서 건 click이 계속 우리에게 온다.
     win.document.body.className = 'pip';
@@ -974,6 +1035,7 @@
     pipTime = null;
     pipPhase = null;
     pipAction = null;
+    pipFill = null;
 
     renderPomo();
   }
@@ -985,7 +1047,7 @@
       document.documentElement.dataset.theme ?? '';
   }
 
-  function renderPip(clock, label) {
+  function renderPip(clock, label, offset) {
     if (pipWindow === null) return;
 
     const waiting = pendingNext !== null;
@@ -993,6 +1055,7 @@
     setText(pipTime, clock);
     setText(pipPhase, label || `${Math.round(pomoLength / 60)}분`);
     setText(pipAction, waiting ? nextLabel() : runLabel());
+    pipFill.style.strokeDashoffset = offset;
 
     const body = pipWindow.document.body;
     body.classList.toggle('is-running', pomoEndsAt !== null);
@@ -1029,6 +1092,11 @@
       if (!force && field === document.activeElement) continue;
       field.value = String(cycle[Number(field.dataset.round)][field.dataset.key]);
     }
+
+    // 불투명도도 저장본에서 온 값이다. 여기 함께 두지 않으면 가져오기나 다른 탭의
+    // 변경으로 상태가 통째로 갈릴 때 이 칸만 옛 값에 남는다 — 회차 칸과 같은 함정이다.
+    // 끄는 중일 때는 건드리지 않는다. 손 안에서 손잡이가 튀면 조절할 수가 없다.
+    if (force || pomoVeil !== document.activeElement) paintMiniVeil(Store.getMiniOpacity());
   }
 
   function renderPomoSettings() {
@@ -2422,6 +2490,17 @@
     reflectLengthChange();
   });
 
+  // 끄는 동안에는 화면만 따라온다. 여기서 저장하면 한 번 끌 때마다 판 번호가
+  // 수십 번 올라가고, 그때마다 다른 탭이 고치던 것과 되돌릴 수 있던 5초가 날아간다.
+  pomoVeil.addEventListener('input', () => paintMiniVeil(Number(pomoVeil.value)));
+
+  // 손을 뗄 때 한 번 저장한다. 성공하든 실패하든 화면은 **저장본이 지키고 있는 값**으로
+  // 되맞춘다 — 실패한 채로 두면 화면은 옅은데 다음에 열면 진한 채로 돌아온다.
+  pomoVeil.addEventListener('change', () => {
+    saved(Store.setMiniOpacity(Number(pomoVeil.value)));
+    paintMiniVeil(Store.getMiniOpacity());
+  });
+
   pomoPanel.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
 
@@ -3398,6 +3477,7 @@
   Store.load();
   renderTheme();
   renderBanner();
+  paintMiniVeil(Store.getMiniOpacity());
   restorePomoRun();
   renderPomo();
   render();

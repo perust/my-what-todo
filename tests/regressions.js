@@ -40,7 +40,7 @@ function loadStore(options = {}) {
 
 function baseData(overrides = {}) {
   return {
-    version: 4,
+    version: 5,
     theme: null,
     sort: 'manual',
     pomodoro: [
@@ -49,6 +49,7 @@ function baseData(overrides = {}) {
       { focus: 25, rest: 5 },
       { focus: 25, rest: 25 }
     ],
+    miniOpacity: 82,
     categories: [
       { id: 'work', name: '업무', hue: 220 },
       { id: 'personal', name: '개인', hue: 140 }
@@ -402,7 +403,14 @@ class FakeElement {
     this.attributes = new Map();
     this.listeners = new Map();
     this.classList = new ClassList(this);
-    this.style = { setProperty() {} };
+    // 사용자 정의 속성(--mini-veil 등)은 실제로 기억한다. 삼키면 CSSOM으로만
+    // 건드리는 값들을 검사할 방법이 없어진다. 카멜케이스 직접 대입은 그대로 객체에 앉는다.
+    const custom = new Map();
+    this.style = {
+      setProperty(name, value) { custom.set(name, String(value)); },
+      getPropertyValue(name) { return custom.has(name) ? custom.get(name) : ''; },
+      removeProperty(name) { custom.delete(name); }
+    };
     this.hidden = false;
     this.open = false;
     this.value = '';
@@ -522,6 +530,7 @@ function loadApp(options = {}) {
   let pomodoro = [
     { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 25 }
   ];
+  let miniOpacity = options.miniOpacity ?? 82;
   const mockStore = {
     STORAGE_KEY: 'daily-todo:v1', PRIORITIES: [0, 1, 2, 3], SORTS: ['priority', 'manual'],
     MAX_TITLE: 100, MAX_CATEGORY_NAME: 12, MAX_CATEGORIES: 64,
@@ -531,6 +540,13 @@ function loadApp(options = {}) {
     loadRun() { return options.run === undefined ? null : options.run; },
     saveRun(run) { savedRuns.push(JSON.parse(JSON.stringify(run))); },
     getTheme() { return null; }, getSort() { return 'priority'; },
+    MINI_OPACITY_DEFAULT: 82,
+    getMiniOpacity() { return miniOpacity; },
+    setMiniOpacity(value) {
+      if (options.miniOpacityResult === null) return null;
+      miniOpacity = Math.min(100, Math.max(0, Math.round(Number(value))));
+      return miniOpacity;
+    },
     getPomodoro() { return pomodoro.map((round) => ({ ...round })); },
     setPomodoro(value) {
       pomodoro = value === null
@@ -692,6 +708,7 @@ function loadApp(options = {}) {
     setChanging(categoryId, priorityId) { changingCategory = categoryId; changingPriority = priorityId; },
     state() { return { pendingUndo, changingCategory, changingPriority, queuedNotice, pendingMarkdownImport }; },
 
+    syncPomoSettings, paintMiniVeil,
     restorePomoRun, renderPomo, pomoRefresh, pomoFinish, pomoAdvance, pomoAct,
     cycleEnter, pomoSet, togglePomo, reflectLengthChange,
     pomoState() {
@@ -1839,6 +1856,84 @@ test('사라지는 버튼은 포커스를 자리를 이어받는 버튼에게 �
   outside.focus();
   id('pomo-mini-open').click();
   assert.equal(focused(), outside, '누르지도 않은 곳의 포커스를 뺏지 않는다');
+});
+
+// ── 미니 타이머 불투명도 ────────────────────────────────
+
+test('불투명도는 끄는 동안 화면만 따라오고 손을 뗄 때 한 번 저장한다', () => {
+  const app = loadApp();
+  const slider = app.document.getElementById('pomo-veil');
+  const mini = app.document.getElementById('pomo-mini');
+  const readVeil = () => mini.style.getPropertyValue('--mini-veil');
+
+  // 테스트 하네스는 init 블록을 떼어내므로 그 자리에서 도는 것과 같은 경로를 부른다
+  app.sandbox.__appTest.paintMiniVeil(app.Store.getMiniOpacity());
+  assert.equal(readVeil(), '82%', '저장본에 든 값으로 먼저 칠한다');
+
+  // 끄는 중 — 화면은 따라오되 저장은 하지 않는다. 매 순간 저장하면 판 번호가
+  // 수십 번 올라가 다른 탭이 그때마다 통째로 다시 읽는다.
+  for (const value of ['70', '55', '40']) {
+    slider.value = value;
+    slider.dispatch('input');
+  }
+  assert.equal(readVeil(), '40%');
+  assert.equal(app.document.getElementById('pomo-veil-value').textContent, '40%');
+  assert.equal(app.Store.getMiniOpacity(), 82, '아직 저장하지 않았다');
+
+  // 손을 뗄 때 한 번
+  slider.dispatch('change');
+  assert.equal(app.Store.getMiniOpacity(), 40);
+  assert.equal(readVeil(), '40%');
+});
+
+test('불투명도 손잡이는 저장된 값을 그대로 되돌려준다', () => {
+  // step이 1이 아니면 저장된 82가 손잡이에서 80으로 스냅되어, 숫자와 손잡이가
+  // 어긋나고 끌어서 82로 돌아갈 길이 사라진다.
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const tag = /<input\b[^>]*\bid="pomo-veil"[^>]*>/.exec(html);
+  assert.ok(tag, '불투명도 손잡이를 찾지 못했다');
+  assert.match(tag[0], /\bstep="1"/);
+  assert.match(tag[0], /\bmin="0"/);
+  assert.match(tag[0], /\bmax="100"/);
+});
+
+test('불투명도 저장이 실패하면 화면을 저장본 값으로 되맞춘다', () => {
+  const app = loadApp({ miniOpacityResult: null });
+  const slider = app.document.getElementById('pomo-veil');
+  const mini = app.document.getElementById('pomo-mini');
+
+  slider.value = '10';
+  slider.dispatch('input');
+  assert.equal(mini.style.getPropertyValue('--mini-veil'), '10%');
+
+  slider.dispatch('change');
+  assert.equal(mini.style.getPropertyValue('--mini-veil'), '82%',
+    '화면은 옅은데 다음에 열면 진한 채로 돌아오면 안 된다');
+  assert.equal(slider.value, '82');
+  assert.match(app.document.getElementById('toast').textContent, /저장하지 못했습니다/);
+});
+
+test('상태가 통째로 갈리면 불투명도 칸도 함께 따라간다', () => {
+  const app = loadApp({ miniOpacity: 35 });
+  const mini = app.document.getElementById('pomo-mini');
+  const slider = app.document.getElementById('pomo-veil');
+
+  // 다른 탭이 쓴 것을 채택하는 길. 회차 칸과 같은 함정이라 같은 자리에서 함께 맞춘다.
+  app.sandbox.__appTest.adoptExternal();
+  assert.equal(mini.style.getPropertyValue('--mini-veil'), '35%');
+  assert.equal(slider.value, '35');
+
+  // 상태가 통째로 갈린 자리에서는 포커스가 손잡이에 있어도 저장본이 이긴다.
+  // 회차 칸과 같은 규칙이다 — 화면에 남은 값이 저장본과 다르면 그쪽이 거짓말이다.
+  app.document.activeElement = slider;
+  slider.value = '90';
+  app.sandbox.__appTest.adoptExternal();
+  assert.equal(slider.value, '35');
+
+  // 반면 회차 하나를 고친 뒤의 되맞춤은 손 안에 있는 칸을 건드리지 않는다
+  slider.value = '90';
+  app.sandbox.__appTest.syncPomoSettings(false);
+  assert.equal(slider.value, '90');
 });
 
 // ── 문의하기 ────────────────────────────────────────────
