@@ -946,9 +946,12 @@
     svg.setAttribute('focusable', 'false');
 
     const track = document.createElementNS(NS, 'circle');
-    pipFill = document.createElementNS(NS, 'circle');
+    // 채워지는 쪽은 매초 손대야 하므로 함께 돌려준다. 여기서 모듈 변수에 바로
+    // 넣지 않는다 — 만드는 일과 어디에 매어두는 일이 섞이면, 두 번 불렀을 때
+    // 화면에 없는 쪽을 붙들고 있게 된다.
+    const fill = document.createElementNS(NS, 'circle');
 
-    for (const circle of [track, pipFill]) {
+    for (const circle of [track, fill]) {
       circle.setAttribute('cx', '50');
       circle.setAttribute('cy', '50');
       circle.setAttribute('r', '44');
@@ -956,14 +959,14 @@
       circle.setAttribute('stroke-width', '8');
     }
     track.setAttribute('class', 'pomo-dial-track');
-    pipFill.setAttribute('class', 'pomo-dial-fill');
-    pipFill.setAttribute('stroke-linecap', 'round');
+    fill.setAttribute('class', 'pomo-dial-fill');
+    fill.setAttribute('stroke-linecap', 'round');
     // 12시에서 시작해 시계 방향으로 채운다
-    pipFill.setAttribute('transform', 'rotate(-90 50 50)');
-    pipFill.style.strokeDasharray = String(DIAL_LENGTH);
+    fill.setAttribute('transform', 'rotate(-90 50 50)');
+    fill.style.strokeDasharray = String(DIAL_LENGTH);
 
-    svg.append(track, pipFill);
-    return svg;
+    svg.append(track, fill);
+    return { svg, fill };
   }
 
   /**
@@ -1088,8 +1091,11 @@
     const label = el('div', 'pomo-dial-label');
     label.append(pipTime, pipPhase, pipAction);
 
+    const dial = buildDial();
+    pipFill = dial.fill;
+
     const face = el('div', 'pomo-dial-face');
-    face.append(buildDial(), label);
+    face.append(dial.svg, label);
 
     const box = el('div', 'pip-box');
     box.append(face, pipMode);

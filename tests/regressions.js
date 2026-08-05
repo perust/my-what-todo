@@ -363,6 +363,74 @@ test('태그 필터의 태그 축은 제거하되 검색 scope는 직접 일치 
   );
 });
 
+test('화면 설정은 가져오기와 로드에서 같은 자리에서 정규화된다', () => {
+  // 저장본을 열 때와 파일을 가져올 때가 같은 검증(adopt)을 탄다. 두 값이 늘어난 뒤로도
+  // 그 약속이 지켜지는지 본다 — 여기가 헐거우면 남이 만든 파일 하나로 화면이 깨진다.
+  // 무엇이 들어오든 **나오는 것의 모양이 정해져 있다.** 어떤 값이 어떻게 강제 변환되는지를
+  // 하나하나 적어두면 그 표가 곧 명세가 되어버리는데, 정작 지켜야 하는 것은 이쪽이다.
+  const hostile = [
+    ['범위 밖(위)', 101], ['범위 밖(아래)', -1], ['NaN', Number.NaN],
+    ['없음', undefined], ['널', null], ['객체', { v: 50 }], ['배열', [50]],
+    ['무한대', Number.POSITIVE_INFINITY], ['문자열', '50'], ['참', true],
+    ['빈 문자열', ''], ['음수 0', -0]
+  ];
+
+  for (const [label, value] of hostile) {
+    const { Store } = loadStore({ context: true });
+    assert.ok(Store.importData(baseData({ miniOpacity: value, pipDial: value })), label);
+
+    const opacity = Store.getMiniOpacity();
+    assert.ok(Number.isInteger(opacity) && opacity >= 0 && opacity <= 100,
+      `${label} → 0~100 정수여야 하는데 ${opacity}`);
+    assert.equal(typeof Store.getPipDial(), 'boolean', `${label} → 참/거짓`);
+  }
+
+  // 읽을 수가 없는 값은 기본값으로 떨어진다
+  for (const value of [Number.NaN, undefined, { v: 50 }, 'nope']) {
+    const { Store } = loadStore({ context: true });
+    assert.ok(Store.importData(baseData({ miniOpacity: value, pipDial: value })));
+    assert.equal(Store.getMiniOpacity(), 82);
+    assert.equal(Store.getPipDial(), true);
+  }
+
+  // 숫자로 읽히는 값은 받아들인다 — 회차 시간(clampMinutes)과 같은 관례다.
+  // 보기 방식은 참/거짓뿐이라 그런 여지를 두지 않는다. 억지로 읽을 값이 없다.
+  const lenient = loadStore({ context: true });
+  assert.ok(lenient.Store.importData(baseData({ miniOpacity: '50', pipDial: 'false' })));
+  assert.equal(lenient.Store.getMiniOpacity(), 50);
+  assert.equal(lenient.Store.getPipDial(), true, "'false'는 참도 거짓도 아니다");
+
+  // 멀쩡한 값은 그대로 살아남고, 저장·재로드를 건너도 같다
+  const { Store, localStorage } = loadStore({ context: true });
+  assert.ok(Store.importData(baseData({ miniOpacity: 37, pipDial: false })));
+  assert.equal(Store.getMiniOpacity(), 37);
+  assert.equal(Store.getPipDial(), false);
+
+  const reopened = loadStore({ context: true });
+  reopened.localStorage.setItem('daily-todo:v1', localStorage.getItem('daily-todo:v1'));
+  reopened.Store.load();
+  assert.equal(reopened.Store.getMiniOpacity(), 37, '다시 열어도 지켜진다');
+  assert.equal(reopened.Store.getPipDial(), false);
+
+  // 소수점은 반올림해 들인다. 손잡이가 정수만 내지만 파일은 아무 값이나 담을 수 있다.
+  const rounded = loadStore({ context: true });
+  assert.ok(rounded.Store.importData(baseData({ miniOpacity: 36.6 })));
+  assert.equal(rounded.Store.getMiniOpacity(), 37);
+});
+
+test('화면 설정도 저장 실패에는 통째로 되돌아간다', () => {
+  const { Store, localStorage } = loadStore({ context: true });
+  assert.ok(Store.importData(baseData({ miniOpacity: 40, pipDial: true })));
+
+  // 다음 쓰기를 막는다. 변경 API는 실패하면 값을 되돌리고 null을 준다 (PRD §8).
+  localStorage.setItem = () => { throw new Error('quota'); };
+
+  assert.equal(Store.setMiniOpacity(10), null);
+  assert.equal(Store.getMiniOpacity(), 40, '되돌리지 않으면 화면과 저장본이 갈라진다');
+  assert.equal(Store.setPipDial(false), null);
+  assert.equal(Store.getPipDial(), true);
+});
+
 class ClassList {
   constructor(owner) { this.owner = owner; this.values = new Set(); }
   setFrom(text) { this.values = new Set(String(text || '').split(/\s+/).filter(Boolean)); }
@@ -433,8 +501,16 @@ class FakeElement {
     const at = this.parentNode.childNodes.indexOf(this);
     if (at >= 0) { next.parentNode = this.parentNode; this.parentNode.childNodes[at] = next; this.parentNode = null; }
   }
-  setAttribute(name, value) { this.attributes.set(name, String(value)); }
-  getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
+  setAttribute(name, value) {
+    // 진짜 DOM에서 `class` 속성과 classList는 같은 것이다. 여기서 갈라 두면
+    // SVG처럼 setAttribute로만 클래스를 붙이는 코드가 검사에서 사라진다.
+    if (name === 'class') { this.classList.setFrom(value); return; }
+    this.attributes.set(name, String(value));
+  }
+  getAttribute(name) {
+    if (name === 'class') return this.classList.toString();
+    return this.attributes.has(name) ? this.attributes.get(name) : null;
+  }
   addEventListener(type, fn) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
     this.listeners.get(type).push(fn);
@@ -478,9 +554,13 @@ function makeDocument() {
     title: 'My What Todo',
     activeElement: null,
     documentElement: new FakeElement('html'),
+    head: new FakeElement('head'),
     body: new FakeElement('body'),
     listeners: new Map(),
     createElement(tag) { return new FakeElement(tag, document); },
+    // SVG는 이름공간으로 만든다. 가짜 문서에서는 같은 요소로 충분하다 —
+    // 검사하는 것은 붙은 속성과 클래스이지 그리기가 아니다.
+    createElementNS(ns, tag) { return new FakeElement(tag, document); },
     getElementById(id) {
       if (!ids.has(id)) { const node = new FakeElement('div', document); node.id = id; ids.set(id, node); }
       return ids.get(id);
@@ -500,6 +580,7 @@ function makeDocument() {
     }
   };
   document.documentElement.ownerDocument = document;
+  document.head.ownerDocument = document;
   document.body.ownerDocument = document;
   return document;
 }
@@ -532,6 +613,8 @@ function loadApp(options = {}) {
     { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 5 }, { focus: 25, rest: 25 }
   ];
   let miniOpacity = options.miniOpacity ?? 82;
+  let pipDial = options.pipDial ?? true;
+  let theme = options.theme ?? null;
   const mockStore = {
     STORAGE_KEY: 'daily-todo:v1', PRIORITIES: [0, 1, 2, 3], SORTS: ['priority', 'manual'],
     MAX_TITLE: 100, MAX_CATEGORY_NAME: 12, MAX_CATEGORIES: 64,
@@ -540,9 +623,17 @@ function loadApp(options = {}) {
     load() { loadCount += 1; return []; },
     loadRun() { return options.run === undefined ? null : options.run; },
     saveRun(run) { savedRuns.push(JSON.parse(JSON.stringify(run))); },
-    getTheme() { return null; }, getSort() { return 'priority'; },
+    getTheme() { return theme; },
+    setTheme(value) { theme = value; return value; },
+    getSort() { return 'priority'; },
     MINI_OPACITY_DEFAULT: 82,
     getMiniOpacity() { return miniOpacity; },
+    getPipDial() { return pipDial; },
+    setPipDial(value) {
+      if (options.pipDialResult === null) return null;
+      pipDial = value === true;
+      return pipDial;
+    },
     setMiniOpacity(value) {
       if (options.miniOpacityResult === null) return null;
       miniOpacity = Math.min(100, Math.max(0, Math.round(Number(value))));
@@ -696,6 +787,44 @@ function loadApp(options = {}) {
     },
     AudioContext: class {}, webkitAudioContext: class {}
   };
+
+  /**
+   * 가짜 별도 창 (Document Picture-in-Picture).
+   *
+   * 진짜 창은 사용자가 눌러야만 열리고 자동화로는 좀처럼 열리지 않는다. 그런데 그
+   * 안에서 도는 것은 대부분 순수한 판단이다 — 어떤 아이콘을 고르는지, 어떤 이름을
+   * 붙이는지, 어느 클래스를 켜는지, 닫을 때 무엇을 놓는지. 그 부분만이라도 여기서 잡는다.
+   */
+  let pipWin = null;
+  let pipTimers = 0;
+  if (!options.pipUnsupported) {
+    sandbox.documentPictureInPicture = {
+      get window() { return pipWin; },
+      requestWindow(size) {
+        if (options.pipRejects) return Promise.reject(new Error('denied'));
+        const pipDocument = makeDocument();
+        pipWin = {
+          document: pipDocument,
+          innerWidth: size?.width ?? 240,
+          innerHeight: size?.height ?? 210,
+          requested: { ...size },
+          listeners: new Map(),
+          setInterval() { pipTimers += 1; return 77; },
+          clearInterval() { pipTimers -= 1; },
+          addEventListener(type, fn) {
+            if (!this.listeners.has(type)) this.listeners.set(type, []);
+            this.listeners.get(type).push(fn);
+          },
+          close() {
+            const gone = pipWin;
+            pipWin = null;
+            for (const fn of gone.listeners.get('pagehide') ?? []) fn({ type: 'pagehide' });
+          }
+        };
+        return Promise.resolve(pipWin);
+      }
+    };
+  }
   sandbox.globalThis = sandbox;
   let source = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
   const end = source.indexOf("  Store.load();\n", source.indexOf("addEventListener('storage'"));
@@ -709,7 +838,7 @@ function loadApp(options = {}) {
     setChanging(categoryId, priorityId) { changingCategory = categoryId; changingPriority = priorityId; },
     state() { return { pendingUndo, changingCategory, changingPriority, queuedNotice, pendingMarkdownImport }; },
 
-    syncPomoSettings, paintMiniVeil,
+    syncPomoSettings, paintMiniVeil, openPip, PIP_ICONS,
     restorePomoRun, renderPomo, pomoRefresh, pomoFinish, pomoAdvance, pomoAct,
     cycleEnter, pomoSet, togglePomo, reflectLengthChange,
     pomoState() {
@@ -723,6 +852,8 @@ function loadApp(options = {}) {
   vm.runInContext(source, sandbox, { filename: 'app.js' });
   return {
     sandbox, document, Store, restored, fileSnapshots, markdownSnapshots, timers, savedRuns,
+    get pipWindow() { return pipWin; },
+    get pipTimers() { return pipTimers; },
     emitFileStatus(state) { currentFileState = state; fileStatusHandler(state); },
     emitFileError(error = new Error('file error')) { fileErrorHandler(error); },
     emitMarkdownStatus(state) { markdownStatusHandler(state); },
@@ -1857,6 +1988,168 @@ test('사라지는 버튼은 포커스를 자리를 이어받는 버튼에게 �
   outside.focus();
   id('pomo-mini-open').click();
   assert.equal(focused(), outside, '누르지도 않은 곳의 포커스를 뺏지 않는다');
+});
+
+// ── 빼놓은 창 ───────────────────────────────────────────
+
+/** 저 창의 노드를 클래스로 집는다. 가짜 문서에는 선택자 엔진이 없다. */
+function pipParts(app) {
+  const win = app.pipWindow;
+  const find = (cls, node = win.document.body) => {
+    for (const child of node.childNodes) {
+      if (child.classList?.contains(cls)) return child;
+      const deeper = find(cls, child);
+      if (deeper) return deeper;
+    }
+    return null;
+  };
+  return { win, find,
+    time: find('pip-time'), phase: find('pip-phase'),
+    action: find('pip-action'), mode: find('pip-mode'),
+    face: find('pomo-dial-face'), fill: find('pomo-dial-fill') };
+}
+
+test('빼놓은 창은 눈금과 시간, 누를 것과 보기 방식 버튼을 세운다', async () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  t.cycleEnter(0, 'focus', true);
+  await t.openPip();
+
+  const p = pipParts(app);
+  assert.ok(p.time && p.phase && p.action && p.mode && p.face && p.fill, '여섯 자리가 다 선다');
+  assert.equal(p.win.document.body.classList.contains('pip'), true);
+  assert.equal(p.win.document.documentElement.lang, 'ko');
+  assert.equal(app.pipTimers, 1, '저 창 자신의 인터벌을 건다 — 배경 탭 스로틀링을 비켜간다');
+
+  // 누를 것은 원 안(라벨)에 있다. 밖에 줄을 두면 그만큼 창이 커져야 한다.
+  assert.equal(p.action.parentNode.classList.contains('pomo-dial-label'), true);
+
+  // 열자마자 화면이 채워져 있다 (renderPomo가 openPip 끝에서 한 번 돈다)
+  assert.equal(p.time.textContent, '25:00');
+  assert.equal(p.phase.textContent, '집중 1/4');
+  assert.equal(p.win.document.body.classList.contains('is-running'), true);
+});
+
+test('빼놓은 창의 아이콘과 읽히는 이름은 상태를 따라간다', async () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const ICONS = t.PIP_ICONS;
+
+  t.cycleEnter(0, 'focus', true);
+  await t.openPip();
+  const p = pipParts(app);
+  const shape = () => p.action.dataset.shape;
+
+  assert.equal(shape(), ICONS.pause, '돌아가는 중에는 멈추기');
+  assert.equal(p.action.getAttribute('aria-label'), '일시정지');
+
+  t.pomoAct();                       // 일시정지
+  assert.equal(shape(), ICONS.play, '멈춘 뒤에는 돌리기');
+  // 무슨 글자인지는 흐른 시간에 달렸다(`시작`·`계속`·`다시 시작`). 검사할 것은
+  // **창과 패널이 같은 말을 하는가**다 — 갈라지면 어느 쪽이 맞는지 알 수 없다.
+  assert.equal(p.action.getAttribute('aria-label'),
+    app.document.getElementById('pomo-toggle').textContent);
+
+  t.pomoAct();                       // 계속
+  t.expirePomo();                    // 구간 끝
+  assert.equal(shape(), ICONS.next, '기다릴 때는 다음 구간으로 — 다시 미는 것과 다른 일이다');
+  assert.equal(p.action.getAttribute('aria-label'), '휴식 시작');
+  assert.equal(p.phase.textContent, '휴식 시작',
+    '아이콘만으로는 `계속`과 갈라지지 않아, 이름 자리에 누를 것을 적는다');
+  assert.equal(p.win.document.body.classList.contains('is-waiting'), true);
+});
+
+test('빼놓은 창은 1초마다 아이콘을 다시 만들지 않는다', async () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  t.cycleEnter(0, 'focus', true);
+  await t.openPip();
+  const p = pipParts(app);
+
+  const before = p.action.childNodes[0];
+  for (let i = 0; i < 5; i++) t.renderPomo();
+  assert.equal(p.action.childNodes[0], before, '같은 모양이면 손대지 않는다');
+
+  t.pomoAct(); // 멈추면 모양이 바뀌므로 이때만 갈린다
+  assert.notEqual(p.action.childNodes[0], before);
+});
+
+test('보기 방식 버튼은 클래스와 저장값을 함께 바꾸고, 기본은 원형 시계다', async () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  assert.equal(app.Store.getPipDial(), true, '처음 열면 원형 시계다');
+
+  t.cycleEnter(0, 'focus', true);
+  await t.openPip();
+  const p = pipParts(app);
+
+  assert.equal(p.win.document.body.classList.contains('is-text'), false);
+  assert.equal(p.mode.getAttribute('aria-label'), '숫자만 보기');
+
+  p.mode.click();
+  assert.equal(app.Store.getPipDial(), false, '고른 것은 저장된다');
+  assert.equal(p.win.document.body.classList.contains('is-text'), true);
+  assert.equal(p.mode.getAttribute('aria-label'), '원형 시계로 보기');
+
+  p.mode.click();
+  assert.equal(app.Store.getPipDial(), true);
+  assert.equal(p.win.document.body.classList.contains('is-text'), false);
+});
+
+test('빼놓은 창은 테마를 따라가고, 닫으면 인터벌과 참조를 놓는다', async () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  t.cycleEnter(0, 'focus', true);
+  await t.openPip();
+  const p = pipParts(app);
+
+  app.document.documentElement.dataset.theme = 'dark';
+  app.sandbox.__appTest.renderPomo();
+  // 테마는 renderTheme이 물려준다. 여기서는 그 경로를 직접 부른다.
+  app.document.getElementById('theme-toggle').dispatch('click');
+  assert.equal(p.win.document.documentElement.dataset.theme,
+    app.document.documentElement.dataset.theme, '저 창만 반대 색으로 남지 않는다');
+
+  // 미니 타이머는 접힌다 — 같은 시계를 두 군데 띄우지 않는다
+  t.togglePomo(false);
+  assert.equal(app.document.getElementById('pomo-mini').hidden, true);
+
+  p.win.close();
+  assert.equal(app.pipWindow, null);
+  assert.equal(app.pipTimers, 0, '거두지 않으면 닫힌 창의 인터벌이 남는다');
+  assert.equal(app.document.getElementById('pomo-pip').getAttribute('aria-label'),
+    '타이머를 창으로 빼기');
+  assert.equal(app.document.getElementById('pomo-mini').hidden, false,
+    '창이 닫혔으니 미니 타이머가 다시 그 자리를 맡는다');
+});
+
+test('창을 열지 못하면 알리고, 두 번 눌러도 두 번 열지 않는다', async () => {
+  const denied = loadApp({ pipRejects: true });
+  await denied.sandbox.__appTest.openPip();
+  assert.equal(denied.pipWindow, null);
+  assert.match(denied.document.getElementById('toast').textContent, /창을 열지 못했습니다/);
+
+  const app = loadApp();
+  await Promise.all([app.sandbox.__appTest.openPip(), app.sandbox.__appTest.openPip()]);
+  assert.notEqual(app.pipWindow, null);
+  assert.equal(app.pipTimers, 1, '두 번째 요청은 거절당하므로 아예 보내지 않는다');
+});
+
+test('지원하지 않는 브라우저에서는 창으로 빼기에 손잡이조차 달지 않는다', async () => {
+  const app = loadApp({ pipUnsupported: true });
+  await app.sandbox.__appTest.openPip();
+  assert.equal(app.pipWindow, null);
+  // 마크업의 hidden을 풀지도, 누를 손잡이를 달지도 않는다 —
+  // 자리만 남겨두면 눌러도 아무 일이 없는 버튼이 된다.
+  assert.equal(app.document.getElementById('pomo-pip').listeners.has('click'), false);
+
+  const supported = loadApp();
+  assert.equal(supported.document.getElementById('pomo-pip').listeners.has('click'), true);
+  assert.equal(supported.document.getElementById('pomo-pip').hidden, false);
 });
 
 // ── 미니 타이머 불투명도 ────────────────────────────────

@@ -1064,7 +1064,9 @@ body.pip.is-rest {
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--focus) 55%, transparent);
+  /* 테두리는 **옅히지 않는다.** 55%로 두었더니 창 바탕과 2.46까지 내려가, 경계에
+     요구되는 3:1에 못 미쳤다. 패널의 `시작` 버튼과 같은 굵기·같은 색으로 둔다. */
+  border: 1px solid var(--focus);
   border-radius: 50%;
   background: color-mix(in srgb, var(--focus) 16%, transparent);
   color: var(--focus);
