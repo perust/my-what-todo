@@ -431,6 +431,62 @@ test('화면 설정도 저장 실패에는 통째로 되돌아간다', () => {
   assert.equal(Store.getPipDial(), true);
 });
 
+test('다른 탭이 먼저 쓴 저장본을 덮지 않는다', () => {
+  // F-20의 2겹이 통째로 걸린 자리다. 이 검사가 없으면 판 번호 비교를 지워도
+  // 아무도 모르고, 그러면 두 탭 중 나중에 쓴 쪽이 앞선 변경을 조용히 날린다.
+  const { Store, localStorage } = loadStore({ context: true });
+  assert.ok(Store.importData(baseData({ todos: [todo('a')] })));
+
+  // 옆 탭이 먼저 썼다 — 판 번호가 올라간 남의 블롭
+  const mine = JSON.parse(localStorage.getItem('daily-todo:v1'));
+  localStorage.setItem('daily-todo:v1', JSON.stringify({ ...mine, rev: mine.rev + 5, theme: 'dark' }));
+
+  assert.equal(Store.setTheme('light'), null, '남의 판을 덮어썼다');
+  assert.equal(Store.lastError, 'conflict');
+  assert.equal(JSON.parse(localStorage.getItem('daily-todo:v1')).theme, 'dark', '옆 탭이 쓴 것이 남아야 한다');
+
+  // 판 번호가 없던 옛 저장본은 **원문이 그대로일 때만** 통과시킨다
+  const old = loadStore({ context: true });
+  old.localStorage.setItem('daily-todo:v1', JSON.stringify({ version: 2, theme: null, todos: [] }));
+  old.Store.load();
+  assert.notEqual(old.Store.setTheme('dark'), null, '원문 그대로면 저장할 수 있어야 한다');
+
+  const touched = loadStore({ context: true });
+  touched.localStorage.setItem('daily-todo:v1', JSON.stringify({ version: 2, theme: null, todos: [] }));
+  touched.Store.load();
+  touched.localStorage.setItem('daily-todo:v1', JSON.stringify({ version: 2, theme: 'dark', todos: [] }));
+  assert.equal(touched.Store.setTheme('light'), null, '그 사이 누가 썼으면 물러나야 한다');
+});
+
+test('카테고리 상한은 만들 때도 로드·가져오기에서도 같은 자리에서 자른다', () => {
+  // 상한이 없으면 pickHue의 `Math.min(...used)`가 인자 개수 제한에 걸려
+  // RangeError로 앱이 그 자리에서 멈춘다. 만드는 자리만 막으면 다음에 열 때
+  // 카테고리가 예고 없이 사라지고 항목만 남는다.
+  const { Store } = loadStore({ context: true });
+  const many = Array.from({ length: 200 }, (_, i) => ({ id: 'c' + i, name: '이름' + i, hue: i * 7 % 360 }));
+  assert.ok(Store.importData(baseData({ categories: many, todos: [] })));
+  assert.equal(Store.getCategories().length, Store.MAX_CATEGORIES, '가져오기에서 잘리지 않았다');
+
+  // 상한까지 찬 뒤에는 더 만들 수 없다
+  assert.equal(Store.addCategory('하나 더'), null);
+  assert.equal(Store.getCategories().length, Store.MAX_CATEGORIES);
+
+  // 하나 지우면 다시 만들 수 있다
+  const removed = Store.getCategories()[0].id;
+  assert.notEqual(Store.removeCategory(removed, Store.getCategories()[1].id), null);
+  assert.notEqual(Store.addCategory('새 이름'), null);
+  assert.equal(Store.getCategories().length, Store.MAX_CATEGORIES);
+
+  // 이름 중복도 세 자리 모두에서 막는다
+  const dup = loadStore({ context: true });
+  assert.ok(dup.Store.importData(baseData({
+    categories: [{ id: 'a', name: '같은 이름', hue: 10 }, { id: 'b', name: '같은 이름', hue: 20 }],
+    todos: []
+  })));
+  assert.equal(dup.Store.getCategories().length, 1, '가져오기에서 이름 중복이 남았다');
+  assert.equal(dup.Store.addCategory('같은 이름'), null);
+});
+
 class ClassList {
   constructor(owner) { this.owner = owner; this.values = new Set(); }
   setFrom(text) { this.values = new Set(String(text || '').split(/\s+/).filter(Boolean)); }
@@ -480,7 +536,7 @@ class FakeElement {
       getPropertyValue(name) { return custom.has(name) ? custom.get(name) : ''; },
       removeProperty(name) { custom.delete(name); }
     };
-    this.hidden = false;
+    this._hidden = false;
     this.open = false;
     this.value = '';
     this.checked = false;
@@ -501,14 +557,38 @@ class FakeElement {
     const at = this.parentNode.childNodes.indexOf(this);
     if (at >= 0) { next.parentNode = this.parentNode; this.parentNode.childNodes[at] = next; this.parentNode = null; }
   }
+  /** 진짜 DOM처럼 id를 문서 색인에 등록한다. 동적으로 만든 요소도 찾을 수 있어야 한다. */
+  set id(value) {
+    this._id = String(value);
+    this.ownerDocument?.registerId?.(this._id, this);
+  }
+  get id() { return this._id || ''; }
+  /** `hidden`도 몇 번 쓰였는지 센다. 같은 값을 다시 넣는 낭비를 검사할 방법이 없었다. */
+  set hidden(value) {
+    this._hiddenWrites = (this._hiddenWrites || 0) + 1;
+    this._hidden = !!value;
+  }
+  get hidden() { return this._hidden === true; }
   setAttribute(name, value) {
     // 진짜 DOM에서 `class` 속성과 classList는 같은 것이다. 여기서 갈라 두면
     // SVG처럼 setAttribute로만 클래스를 붙이는 코드가 검사에서 사라진다.
     if (name === 'class') { this.classList.setFrom(value); return; }
+    // `data-*`도 같은 이유로 dataset과 이어둔다. 갈라 두면 setAttribute로 붙인
+    // data 속성이 `closest('[data-…]')`에 안 잡혀 이벤트 위임이 통째로 죽은 채 통과한다.
+    if (name.startsWith('data-')) {
+      this.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = String(value);
+      return;
+    }
+    if (name === 'id') { this.id = value; return; }
     this.attributes.set(name, String(value));
   }
   getAttribute(name) {
     if (name === 'class') return this.classList.toString();
+    if (name === 'id') return this._id ?? null;
+    if (name.startsWith('data-')) {
+      const key = name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      return key in this.dataset ? String(this.dataset[key]) : null;
+    }
     return this.attributes.has(name) ? this.attributes.get(name) : null;
   }
   addEventListener(type, fn) {
@@ -538,34 +618,74 @@ class FakeElement {
     return out;
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
-  focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
+  /**
+   * 포커스가 옮겨갈 때 진짜 브라우저가 내는 이벤트를 함께 낸다.
+   * 이것이 없으면 `focusout`으로 편집을 끝내는 자리 넷(제목·카테고리·우선순위·이름)을
+   * 테스트로 재현할 방법 자체가 없다 — CLAUDE.md가 실제로 밟았다고 적은 회귀들이다.
+   */
+  focus() {
+    const doc = this.ownerDocument;
+    if (!doc || doc.activeElement === this) return;
+
+    const previous = doc.activeElement;
+    doc.activeElement = this;
+    if (previous) {
+      previous.dispatch('blur', { relatedTarget: this });
+      previous.dispatch('focusout', { relatedTarget: this });
+    }
+    this.dispatch('focus', { relatedTarget: previous ?? null });
+    this.dispatch('focusin', { relatedTarget: previous ?? null });
+  }
+  blur() {
+    const doc = this.ownerDocument;
+    if (!doc || doc.activeElement !== this) return;
+
+    doc.activeElement = null;
+    this.dispatch('blur', { relatedTarget: null });
+    this.dispatch('focusout', { relatedTarget: null });
+  }
   select() { this.selectionStart = this.value.length; }
   setSelectionRange(start) { this.selectionStart = start; }
-  click() { this.dispatch('click'); }
+  /**
+   * 진짜 `HTMLElement.click()`은 `detail: 0`인 이벤트를 낸다 — 마우스 클릭(1 이상)과
+   * 갈라지는 지점이다. 넣지 않으면 `e.detail === 0`으로 키보드를 가려내는 코드가
+   * **반대로** 읽혀, 삭제 뒤 실행 취소로 포커스를 옮기는 접근성 규칙이 검사에서 사라진다.
+   */
+  click() { this.dispatch('click', { detail: 0 }); }
   showModal() { this.open = true; }
   close() { this.open = false; }
   getBoundingClientRect() { return { left: 0, top: 0, right: 100, bottom: 100, height: 100 }; }
 }
 
 /**
- * `index.html`에서 접힌 채로 시작하는 자리들.
+ * `index.html`이 실제로 들고 있는 자리들 — 있는 id와, 접힌 채로 시작하는 id.
  *
- * 가짜 요소는 전부 보이는 채로 태어난다. 그대로 두면 **접힌 자리를 건너뛰는 코드가
- * 검사에서 통째로 사라진다** — 실제로는 안 그리는데 테스트에서는 그리고 있었다.
- * 마크업에서 읽어 와 같은 상태로 세운다.
+ * 마크업에서 읽어오는 이유가 둘이다.
+ *
+ * 하나, **없는 id에는 `null`을 줘야 한다.** 무엇을 물어도 새 요소를 만들어 주면
+ * 마크업에서 요소가 사라지는 종류의 고장을 이 스위트가 전혀 못 본다 — 실제로
+ * `#pomo-dial-fill`을 지워도 전부 통과했는데, 그러면 `app.js`가 최상위에서
+ * `TypeError`로 죽어 할 일 목록이 아예 그려지지 않는다.
+ *
+ * 둘, 가짜 요소는 전부 보이는 채로 태어난다. 그대로 두면 접힌 자리를 건너뛰는
+ * 코드가 검사에서 사라진다 — 실제로는 안 그리는데 테스트에서는 그리고 있었다.
  */
-const HIDDEN_AT_START = (() => {
+const [MARKUP_IDS, HIDDEN_AT_START] = (() => {
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-  const out = new Set();
+  const ids = new Set();
+  const hidden = new Set();
   for (const [tag] of html.matchAll(/<[a-z][a-z0-9]*\b[^>]*>/gi)) {
     const id = /\bid="([\w-]+)"/.exec(tag);
-    if (id && /\shidden(?=[\s>/])/.test(tag)) out.add(id[1]);
+    if (!id) continue;
+    ids.add(id[1]);
+    if (/\shidden(?=[\s>/])/.test(tag)) hidden.add(id[1]);
   }
-  return out;
+  return [ids, hidden];
 })();
 
 function makeDocument() {
   const ids = new Map();
+  let pomoLengths;
   const document = {
     hidden: false,
     title: 'My What Todo',
@@ -578,17 +698,21 @@ function makeDocument() {
     // SVG는 이름공간으로 만든다. 가짜 문서에서는 같은 요소로 충분하다 —
     // 검사하는 것은 붙은 속성과 클래스이지 그리기가 아니다.
     createElementNS(ns, tag) { return new FakeElement(tag, document); },
+    /** 동적으로 만든 요소도 id를 달면 찾을 수 있어야 한다 (진짜 DOM과 같다). */
+    registerId(id, node) { if (!ids.has(id)) ids.set(id, node); },
     getElementById(id) {
-      if (!ids.has(id)) {
-        const node = new FakeElement('div', document);
-        node.id = id;
-        node.hidden = HIDDEN_AT_START.has(id);
-        ids.set(id, node);
-      }
-      return ids.get(id);
+      if (ids.has(id)) return ids.get(id);
+      // 마크업에 없고 아직 만들어지지도 않았다면 진짜 브라우저와 같이 null이다
+      if (!MARKUP_IDS.has(id)) return null;
+
+      const node = new FakeElement('div', document);
+      node.id = id;
+      node.hidden = HIDDEN_AT_START.has(id);
+      return node;   // id setter가 registerId로 색인에 넣는다
     },
     querySelector(selector) {
-      if (selector === '.pomo-lengths') return document.getElementById('pomo-lengths');
+      // 마크업에는 `.pomo-lengths`가 클래스로만 있다. id가 없으므로 따로 세워둔다.
+      if (selector === '.pomo-lengths') return pomoLengths;
       return null;
     },
     querySelectorAll() { return []; },
@@ -601,6 +725,8 @@ function makeDocument() {
       for (const fn of this.listeners.get(type) ?? []) fn(event);
     }
   };
+  pomoLengths = new FakeElement('div', document);
+  pomoLengths.classList.add('pomo-lengths');
   document.documentElement.ownerDocument = document;
   document.head.ownerDocument = document;
   document.body.ownerDocument = document;
@@ -2216,6 +2342,49 @@ test('접혀 있는 자리에는 쓰지 않고, 펴는 순간 따라잡는다', 
   assert.equal(id('pomo-dial-time').textContent, '05:00');
 });
 
+test('돌아가는 동안 세션 기록은 1초마다 쓰이지 않는다', () => {
+  // 매초 쓰면 판 번호가 계속 올라가 다른 탭이 그때마다 통째로 다시 읽고,
+  // 그 탭이 고치던 것과 되돌릴 수 있던 5초가 함께 날아간다 (F-20 · F-22).
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+
+  t.togglePomo(true);
+  t.cycleEnter(0, 'focus', true);
+  const 시작직후 = app.savedRuns.length;
+
+  for (let i = 0; i < 20; i++) t.renderPomo();
+  assert.equal(app.savedRuns.length, 시작직후, '요약이 같은데도 다시 썼다');
+
+  // 상태가 실제로 바뀌는 자리에서는 쓴다
+  t.pomoAct();                       // 일시정지
+  assert.ok(app.savedRuns.length > 시작직후, '멈췄는데 남기지 않았다');
+
+  const 멈춘뒤 = app.savedRuns.length;
+  for (let i = 0; i < 20; i++) t.renderPomo();
+  assert.equal(app.savedRuns.length, 멈춘뒤);
+});
+
+test('늘 숨어 있는 자리에 1초마다 hidden을 다시 쓰지 않는다', () => {
+  // `hidden`은 한쪽으로만 샌다 — 이미 숨은 것에 true를 다시 넣으면 속성이 다시 쓰이고,
+  // 이미 보이는 것에 false를 넣는 것은 아무 일도 아니다. 그래서 늘 숨어 있는 자리만
+  // 조용히 샜다. 여기서 세지 않으면 그 최적화가 살아 있는지 알 방법이 없다.
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  const writes = (n) => app.document.getElementById(n)._hiddenWrites ?? 0;
+
+  t.togglePomo(true);
+  t.cycleEnter(0, 'focus', true);      // 기다리는 중이 아니므로 두 버튼은 늘 숨어 있다
+
+  const before = { next: writes('pomo-next'), miniNext: writes('pomo-mini-next') };
+  for (let i = 0; i < 10; i++) t.renderPomo();
+  assert.equal(writes('pomo-next'), before.next, '늘 숨은 버튼에 매번 다시 썼다');
+  assert.equal(writes('pomo-mini-next'), before.miniNext);
+
+  // 정말 바뀌는 자리에서는 쓴다
+  t.expirePomo();
+  assert.ok(writes('pomo-next') > before.next, '기다리기 시작했는데 드러내지 않았다');
+});
+
 // ── 미니 타이머 불투명도 ────────────────────────────────
 
 test('불투명도는 끄는 동안 화면만 따라오고 손을 뗄 때 한 번 저장한다', () => {
@@ -2294,6 +2463,91 @@ test('상태가 통째로 갈리면 불투명도 칸도 함께 따라간다', ()
   assert.equal(slider.value, '90');
 });
 
+/** 앱이 실제로 만드는 문의 주소. 문의 흐름을 한 번 태워 `mailto:`에서 꺼낸다. */
+function realContactAddress() {
+  const app = loadApp();
+  const id = (n) => app.document.getElementById(n);
+  let href = null;
+  const link = { set href(v) { href = v; }, get href() { return href; }, click() {} };
+  const realCreate = app.document.createElement.bind(app.document);
+  app.document.createElement = (tag) => (tag === 'a' ? link : realCreate(tag));
+
+  id('contact-button').click();
+  id('contact-body').value = '내용';
+  id('contact-dialog').dispatch('click', {
+    target: { closest: (s) => (s === '[data-choice]' ? { dataset: { choice: 'send' } } : null) }
+  });
+  app.document.createElement = realCreate;
+
+  assert.ok(href && href.startsWith('mailto:'), '문의 주소를 만들지 못했다');
+  return href.slice('mailto:'.length, href.indexOf('?'));
+}
+
+test('문의 주소는 그대로 두고 제목·내용만 인코딩한다', () => {
+  const app = loadApp();
+  const id = (n) => app.document.getElementById(n);
+  let href = null;
+  const link = { set href(v) { href = v; }, get href() { return href; }, click() {} };
+  const realCreate = app.document.createElement.bind(app.document);
+  app.document.createElement = (tag) => (tag === 'a' ? link : realCreate(tag));
+
+  id('contact-button').click();
+  id('contact-body').value = '내용';
+  app.document.getElementById('contact-dialog').dispatch('click', {
+    target: { closest: (s) => (s === '[data-choice]' ? { dataset: { choice: 'send' } } : null) }
+  });
+  app.document.createElement = realCreate;
+
+  assert.ok(href, '메일 앱에 넘길 주소를 만들지 않았다');
+  const at = href.indexOf('?');
+  const address = href.slice('mailto:'.length, at);
+  // 주소까지 인코딩하면 @와 .이 %40·%2E가 되어 메일 앱이 받는 사람을 읽어내지 못한다
+  assert.ok(address.includes('@'), `받는 사람이 인코딩됐다: ${address}`);
+  assert.ok(!address.includes('%'), `받는 사람에 퍼센트 인코딩이 섞였다: ${address}`);
+
+  const query = new URLSearchParams(href.slice(at + 1));
+  assert.equal(query.get('body'), '내용');
+  // 제목을 비우면 기본 제목이 붙는다 (F-23)
+  assert.ok(query.get('subject'), '빈 제목에 기본값이 붙지 않았다');
+
+  // 화면에도 주소가 남아야 메일 앱이 없는 환경에서 옮겨 적을 수 있다 (F-23)
+  assert.ok(id('contact-address').textContent.includes('@'));
+});
+
+test('구간 종료음은 다음이 집중이면 올라가고 휴식이면 내려간다', () => {
+  const app = loadApp();
+  const t = app.sandbox.__appTest;
+  // pomoChime(rising)의 인자를 가로챈다. 진짜 소리는 낼 수 없지만 방향은 검사할 수 있다 —
+  // 화면을 보지 않아도 무엇이 시작됐는지 알 수 있어야 한다는 것이 F-22a의 요구다.
+  const tones = [];
+  class Probe {
+    constructor() { this.currentTime = 0; }
+    createOscillator() {
+      const osc = { frequency: {}, connect: () => ({ connect() {} }), start() {}, stop() {} };
+      tones.push(osc);
+      return osc;
+    }
+    createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect: () => ({ connect() {} }) }; }
+    close() {}
+  }
+  app.sandbox.AudioContext = Probe;
+  app.sandbox.webkitAudioContext = Probe;
+
+  const firstOf = () => { const f = tones[0]?.frequency.value; tones.length = 0; return f; };
+
+  t.togglePomo(true);
+  t.cycleEnter(0, 'focus', true);
+  t.expirePomo();                       // 집중 끝 → 다음은 휴식 → 내려간다
+  const afterFocus = firstOf();
+
+  t.pomoAdvance();
+  t.expirePomo();                       // 휴식 끝 → 다음은 집중 → 올라간다
+  const afterRest = firstOf();
+
+  assert.ok(afterFocus > afterRest,
+    `집중 뒤에는 내려가고 휴식 뒤에는 올라가야 한다 (집중 뒤 ${afterFocus}, 휴식 뒤 ${afterRest})`);
+});
+
 // ── 문의하기 ────────────────────────────────────────────
 
 test('가장 긴 한글 문의도 mailto 주소가 2000자에 닿지 않는다', () => {
@@ -2311,8 +2565,12 @@ test('가장 긴 한글 문의도 mailto 주소가 2000자에 닿지 않는다',
   const subject = maxOf('contact-subject');
   const body = maxOf('contact-body');
 
-  // `mailto:`(7) + 주소(22자, app.js의 CONTACT_PARTS) + `?subject=`(9) + `&body=`(6)
-  const fixed = 7 + 22 + 9 + 6;
+  // 주소는 **앱이 실제로 만든 것**을 쓴다. 소스를 정규식으로 긁거나 길이를 상수로
+  // 박아두면 주소가 길어져도 이 검사가 통과해, 지키겠다고 적어둔 그 관계를
+  // 정작 안 지킨다 (실제로 그랬다).
+  const address = realContactAddress();
+
+  const fixed = 'mailto:'.length + address.length + '?subject='.length + '&body='.length;
   const worst = fixed + 9 * (subject + body);
 
   // 2000자는 일부 메일 앱과 운영체제가 주소 뒤를 자르기 시작하는 자리다.
