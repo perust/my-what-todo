@@ -2301,13 +2301,13 @@ button.badge:hover {
   font-weight: 600;
 }
 
-/* ── 추가 폼의 마감 칸 ──────────────────────────────── */
+/* ── 추가 폼의 자세히 버튼 ──────────────────────────── */
 
-.add-due-toggle {
+/* **줄을 늘리지 않는다.** 여기에 날짜 칸을 펼치게 두었더니 `.add-form`이 좁은
+   화면에서만 줄바꿈을 허용하는 탓에 제목 칸이 330px에서 26px로 찌그러졌다.
+   행의 `⋯`와 같은 대화상자를 열어 입력 칸을 한 벌만 둔다. */
+.add-detail {
   flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   width: 40px;
   height: 40px;
   padding: 0;
@@ -2315,33 +2315,22 @@ button.badge:hover {
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--text-dim);
+  font-size: 17px;
+  line-height: 1;
   cursor: pointer;
 }
 
-.add-due-toggle:hover {
+.add-detail:hover {
   color: var(--text);
 }
 
-/* 펼쳐져 있다는 것을 버튼에도 남긴다. 아래 줄만 열리면 어느 버튼이 연 것인지 모른다. */
-.add-due-toggle.is-on {
+/* 걸어둔 것이 있으면 버튼에 남긴다. 안 그러면 정했는지를 열어봐야만 안다.
+   색만으로 알리지 않으려고 app.js가 aria-label에 날짜를 함께 넣는다. */
+.add-detail.is-set {
   border-color: var(--focus);
   color: var(--focus);
 }
 
-/* 입력창 줄 전체를 차지한다 — 추가 폼은 flex라 새 줄로 내려보내야 한다. */
-.add-due {
-  flex: 1 0 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.add-due[hidden] {
-  display: none;
-}
-
-.add-due-label,
 .detail-label {
   flex: none;
   color: var(--text-dim);
@@ -2349,8 +2338,8 @@ button.badge:hover {
   font-weight: 600;
 }
 
-.add-due-date,
-.add-due-time {
+.detail-due-field,
+.detail-due-clock {
   height: 36px;
   padding: 0 10px;
   border: 1px solid var(--field-border);
@@ -2361,16 +2350,16 @@ button.badge:hover {
   font-size: 14px;
 }
 
-.add-due-date {
+.detail-due-field {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-.add-due-time {
+.detail-due-clock {
   flex: none;
 }
 
-.add-due-clear {
+.detail-due-reset {
   flex: none;
   height: 36px;
   padding: 0 10px;
@@ -2383,7 +2372,7 @@ button.badge:hover {
   cursor: pointer;
 }
 
-.add-due-clear:hover {
+.detail-due-reset:hover {
   color: var(--text);
 }
 
@@ -2859,6 +2848,12 @@ body.has-mini .toast {
 
   .add-category {
     flex: 1 1 auto;
+  }
+
+  /* 좁은 화면에서는 제목이 한 줄을 차지하고 나머지가 둘째 줄에 선다.
+     자세히 버튼도 그 줄의 식구다 — 넓히지 않고 자리만 지킨다. */
+  .add-detail {
+    flex: none;
   }
 
   .tabs {

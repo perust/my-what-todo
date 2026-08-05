@@ -20,12 +20,9 @@
   const input = document.getElementById('add-input');
   const category = document.getElementById('add-category');
   const priority = document.getElementById('add-priority');
-  const addDueToggle = document.getElementById('add-due-toggle');
-  const addDue = document.getElementById('add-due');
-  const addDueDate = document.getElementById('add-due-date');
-  const addDueTime = document.getElementById('add-due-time');
-  const addDueClear = document.getElementById('add-due-clear');
+  const addDetail = document.getElementById('add-detail');
   const detailDialog = document.getElementById('detail-dialog');
+  const detailFacts = document.getElementById('detail-facts');
   const detailSubject = document.getElementById('detail-subject');
   const detailDueDate = document.getElementById('detail-due-date');
   const detailDueTime = document.getElementById('detail-due-time');
@@ -2171,11 +2168,19 @@
   const overdue = (item) =>
     item.dueAt !== null && !item.completed && item.dueAt < Date.now();
 
-  function toggleAddDue(open) {
-    setHidden(addDue, !open);
-    setAttr(addDueToggle, 'aria-expanded', String(open));
-    addDueToggle.classList.toggle('is-on', open);
-    if (open) addDueDate.focus();
+  /**
+   * 아직 만들지 않은 할 일에 걸어둔 마감. 추가 폼에는 날짜 칸을 두지 않고
+   * **대화상자의 그 칸을 그대로 빌려 쓴다** — 같은 입력이 두 벌이면 한쪽만 고치는
+   * 실수가 생기고, 폼 안에 넣었을 때는 제목 칸이 26px로 찌그러지기까지 했다.
+   */
+  let pendingDue = null;
+
+  /** 걸어둔 것이 있는지 버튼에 남긴다. 안 그러면 정했는지를 열어봐야만 안다. */
+  function renderAddDetail() {
+    addDetail.classList.toggle('is-set', pendingDue !== null);
+    setAttr(addDetail, 'aria-label', pendingDue === null
+      ? '자세히 — 마감 정하기'
+      : `자세히 — 마감 ${formatDue(pendingDue)}`);
   }
 
   function handleAdd() {
@@ -2185,22 +2190,15 @@
     // 제목에 `!`를 적었으면 그게 이긴다. 안 적었으면 옆 선택 상자의 값을 쓴다.
     const chosen = { ...parsed, priority: parsed.priority ?? Number(priority.value) };
 
-    // 마감 칸이 접혀 있으면 아예 묻지 않는다. 펼쳐두고 이상한 값을 적었으면
-    // **넣지 않고 그 자리를 알린다** — 조용히 마감 없이 넣으면 적어둔 것이 사라진다.
-    const due = addDue.hidden ? null : readDueFields(addDueDate, addDueTime);
-    if (due === undefined) {
-      addDueDate.focus();
-      showNotice('마감 날짜를 다시 확인해주세요.');
-      return;
-    }
-    chosen.dueAt = due;
+    chosen.dueAt = pendingDue;
 
     if (fits(parsed.title)) {
       const added = saved(Store.add(chosen, category.value));
       if (added) {
         input.value = '';
-        writeDueFields(addDueDate, addDueTime, null);
-        toggleAddDue(false);
+        // 걸어둔 마감은 그 항목에 실렸다. 다음 할 일까지 따라가면 안 된다.
+        pendingDue = null;
+        renderAddDetail();
         const note = hiddenNotice(added);
         // 알림을 render() 뒤에 둔다. render()도 알릴 것이 있으면 알리는데,
         // 방금 누른 것에 대한 답이 그 뒤에 서야 화면에 남는다.
@@ -2237,14 +2235,7 @@
     handleAdd();
   });
 
-  addDueToggle.addEventListener('click', () => toggleAddDue(addDue.hidden));
-
-  addDueClear.addEventListener('click', () => {
-    writeDueFields(addDueDate, addDueTime, null);
-    // 지우고 접는다. 비운 칸을 펼쳐두면 다음 추가에서 또 묻는 것처럼 보인다.
-    toggleAddDue(false);
-    input.focus();
-  });
+  addDetail.addEventListener('click', () => openDetail(null));
 
   // 한글 조합 중의 Enter는 IME가 글자를 확정하는 키다. 여기서 제출하면 두 번 들어간다.
   input.addEventListener('keydown', (e) => {
@@ -3504,7 +3495,11 @@
   // 자세히 대화상자 (F-24)
   // ────────────────────────────────────────────────────────────
 
-  /** 지금 무엇을 고치는 중인가. 닫히면 비운다. */
+  /**
+   * 지금 무엇을 고치는 중인가. 닫히면 비운다.
+   * `null`은 **아직 만들지 않은 할 일**이다 — 추가 폼의 `⋯`로 연 경우다.
+   * "안 열려 있음"과는 `detailDialog.open`으로 구별한다.
+   */
   let detailFor = null;
 
   const formatStamp = (timestamp) => {
@@ -3512,17 +3507,27 @@
     return `${at.getFullYear()}. ${at.getMonth() + 1}. ${at.getDate()}. ${timeFieldOf(at)}`;
   };
 
+  /** `id`가 `null`이면 아직 만들지 않은 할 일이다 — 추가 폼에서 연 경우다. */
   function openDetail(id) {
-    const item = Store.getItem(id);
-    if (!item) return;
+    const item = id === null ? null : Store.getItem(id);
+    if (id !== null && !item) return;
 
     detailFor = id;
-    detailSubject.textContent = item.title;
-    writeDueFields(detailDueDate, detailDueTime, item.dueAt);
-    detailCreated.textContent = formatStamp(item.createdAt);
-    detailCompleted.textContent = item.completedAt === null
-      ? '아직 하지 않았습니다.'
-      : formatStamp(item.completedAt);
+    if (item) {
+      detailSubject.textContent = item.title;
+      writeDueFields(detailDueDate, detailDueTime, item.dueAt);
+      detailCreated.textContent = formatStamp(item.createdAt);
+      detailCompleted.textContent = item.completedAt === null
+        ? '아직 하지 않았습니다.'
+        : formatStamp(item.completedAt);
+    } else {
+      // 치던 제목을 그대로 보여준다. 비어 있으면 무엇을 고치는지 말할 것이 없으므로
+      // 자리를 대신 채운다 — 제목 없이 마감만 먼저 정하는 순서도 막지 않는다.
+      detailSubject.textContent = input.value.trim() || '새 할 일';
+      writeDueFields(detailDueDate, detailDueTime, pendingDue);
+    }
+    // 아직 만들지 않은 것에는 만든 날도 완료도 없다.
+    setHidden(detailFacts, item === null);
 
     detailDialog.showModal();
     detailDueDate.focus();
@@ -3533,12 +3538,18 @@
    * 어디로 갔는지 알 수 없고, 다시 열면 옛 값이 들어 있어 아무 일도 없던 것처럼 보인다.
    */
   function saveDetail() {
-    if (detailFor === null) return;
-
     const due = readDueFields(detailDueDate, detailDueTime);
     if (due === undefined) {
       detailDueDate.focus();
       showNotice('마감 날짜를 다시 확인해주세요.');
+      return;
+    }
+
+    // 아직 만들지 않은 할 일이면 들고만 있는다. 저장할 곳이 없다.
+    if (detailFor === null) {
+      pendingDue = due;
+      renderAddDetail();
+      detailDialog.close();
       return;
     }
 
@@ -3573,7 +3584,10 @@
   detailDialog.addEventListener('close', () => {
     const opener = detailFor;
     detailFor = null;
-    if (opener === null) return;
+    if (opener === null) {
+      addDetail.focus();
+      return;
+    }
     nodeFor(opener)?.querySelector('[data-action="detail"]')?.focus();
   });
 

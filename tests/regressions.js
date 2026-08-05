@@ -1038,7 +1038,9 @@ function loadApp(options = {}) {
         };
       }
     },
-    Parse: { parseInput: () => ({ title: '', priority: null, tags: [] }) },
+    // 기본 스텁은 제목을 늘 빈 문자열로 준다 — 추가가 일어나지 않는 상태를 만든다.
+    // 추가 경로 자체를 봐야 하는 테스트는 진짜 parse.js를 넘긴다.
+    Parse: options.Parse ?? { parseInput: () => ({ title: '', priority: null, tags: [] }) },
     CSS: { escape: (value) => String(value) },
     Blob: class {}, URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
     Date, Math,
@@ -1107,7 +1109,7 @@ function loadApp(options = {}) {
         queuedNoticeSpontaneous, pendingMarkdownImport };
     },
 
-    readDueFields, formatDue, openDetail, saveDetail,
+    readDueFields, formatDue, openDetail, saveDetail, handleAdd,
     syncPomoSettings, paintMiniVeil, openPip, PIP_ICONS,
     restorePomoRun, renderPomo, pomoRefresh, pomoFinish, pomoAdvance, pomoAct,
     cycleEnter, pomoSet, togglePomo, togglePomoView, reflectLengthChange,
@@ -3105,8 +3107,8 @@ test('하위도 자기 마감을 가진다', () => {
 test('시각을 비우면 그날 끝이 되고, 덜 친 날짜는 마감을 지우지 않는다', () => {
   const app = loadApp();
   const hooks = app.sandbox.__appTest;
-  const date = app.document.getElementById('add-due-date');
-  const time = app.document.getElementById('add-due-time');
+  const date = app.document.getElementById('detail-due-date');
+  const time = app.document.getElementById('detail-due-time');
 
   // 날짜만 적으면 그날 23:59다. 00:00으로 두면 "오늘까지"가 오늘 아침에 이미 지난다.
   date.value = '2026-08-06';
@@ -3140,6 +3142,55 @@ test('시각을 비우면 그날 끝이 되고, 덜 친 날짜는 마감을 지�
   assert.equal(hooks.readDueFields(date, time), undefined);
 });
 
+test('추가 폼의 자세히는 같은 대화상자를 쓰고, 정한 마감이 새 항목에 실린다', () => {
+  const app = appWithItems();
+  const hooks = app.sandbox.__appTest;
+  const doc = app.document;
+  const dialog = doc.getElementById('detail-dialog');
+  const opener = doc.getElementById('add-detail');
+
+  doc.getElementById('add-input').value = '치던 제목';
+  opener.click();
+
+  assert.equal(dialog.open, true);
+  // 치던 제목을 그대로 보여준다. 무엇에 마감을 거는지 알 수 있어야 한다.
+  assert.equal(doc.getElementById('detail-subject').textContent, '치던 제목');
+  // 아직 만들지 않은 것에는 만든 날도 완료도 없다.
+  assert.equal(doc.getElementById('detail-facts').hidden, true);
+
+  doc.getElementById('detail-due-date').value = '2026-08-06';
+  doc.getElementById('detail-due-time').value = '09:30';
+  press(dialog, 'save');
+
+  assert.equal(dialog.open, false);
+  // 아직 store에 쓰지 않는다 — 저장할 곳이 없다. 들고만 있는다.
+  assert.equal(app.Store.getRoots().length, 0);
+  // 걸어둔 것이 있다는 것은 버튼에 남아야 한다. 안 그러면 열어봐야만 안다.
+  assert.equal(opener.classList.contains('is-set'), true);
+  assert.match(opener.getAttribute('aria-label'), /8\/6 09:30/);
+  assert.equal(doc.activeElement, opener, '닫으면 여는 버튼으로 돌아온다');
+
+  hooks.handleAdd();
+  const made = app.Store.getRoots()[0];
+  assert.equal(made.title, '치던 제목');
+  assert.equal(new Date(made.dueAt).getHours(), 9);
+
+  // 걸어둔 마감은 그 항목에 실렸다. 다음 할 일까지 따라가면 안 된다.
+  assert.equal(opener.classList.contains('is-set'), false);
+  doc.getElementById('add-input').value = '다음 할 일';
+  hooks.handleAdd();
+  assert.equal(app.Store.getRoots()[1].dueAt, null);
+});
+
+test('제목을 아직 안 쳤어도 마감부터 정할 수 있다', () => {
+  const app = appWithItems();
+  const doc = app.document;
+  doc.getElementById('add-input').value = '   ';
+  doc.getElementById('add-detail').click();
+  // 무엇을 고치는지 말할 것이 없으면 자리를 대신 채운다. 순서를 막지는 않는다.
+  assert.equal(doc.getElementById('detail-subject').textContent, '새 할 일');
+});
+
 test('마감 배지는 날짜만 정했으면 시각을 적지 않는다', () => {
   const app = loadApp();
   const hooks = app.sandbox.__appTest;
@@ -3165,6 +3216,14 @@ const press = (dialog, choice) => dialog.dispatch('click', {
  * 자세히 대화상자는 항목을 실제로 들고 있는 store가 있어야 볼 수 있다.
  * 기본 mockStore는 목록이 늘 비어 있어 행이 하나도 안 그려진다.
  */
+function realParse() {
+  const box = { module: undefined, globalThis: undefined };
+  box.globalThis = box;
+  vm.createContext(box);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'parse.js'), 'utf8'), box, { filename: 'parse.js' });
+  return box.Parse;
+}
+
 function appWithItems(options = {}) {
   const base = loadApp().Store;
   const items = [];
@@ -3188,7 +3247,7 @@ function appWithItems(options = {}) {
     },
     getStats() { return { done: 0, total: items.length, percent: 0 }; }
   };
-  return { ...loadApp({ ...options, Store }), items };
+  return { ...loadApp({ Parse: realParse(), ...options, Store }), items };
 }
 
 test('자세히를 열면 지금 값이 들어오고, 저장하면 여는 버튼으로 돌아온다', () => {
